@@ -1,0 +1,27 @@
+services:
+  music-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID:-1001}
+        APP_GID: ${APP_GID:-1001}
+      network: host  # works around network issues
+    container_name: discord-music-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./music_library:/app/cache/audio
+    networks:
+      - bot-network
+    # Healthcheck to guard against TCP connection exhaustion
+    healthcheck:
+      test: ["CMD", "python", "-c", "import psutil; exit(0 if len(psutil.net_connections('tcp')) < 10000 else 1)"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  bot-network:
+    driver: bridge

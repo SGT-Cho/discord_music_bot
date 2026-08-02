@@ -1,0 +1,68 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cookie
+cookies.txt
+*.cookies.txt
+
+# Logs and local media/cache
+*.log
+bot.log
+logs/
+/music_library/
+/cache/
+*.mp3
+*.m4a
+*.wav
+*.flac
+*.webm
+*.opus
+
+# Virtual environments and packaging output
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+
+# Operating system and editor files
+.DS_Store
+.idea/
+.vscode/
+*.suo
+*.sw?
+
+# Local AI/editor/task tooling
+.claude/
+.cursor/
+.windsurf/
+.trae/
+.clinerules/
+.roomodes
+.taskmaster/
+.github/instructions/
+AGENTS.md
+CLAUDE.md
+
+# Local deployment artifacts
+docker/
+scripts/
+tempCodeRunnerFile.py
+
+# Development notes and network experiments
+TROUBLESHOOTING_FIXES.md
+test_task*.py
+test_ytdlp.py
+test_youtube_improvements.py

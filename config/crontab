@@ -1,0 +1,15 @@
+# ============================================================================
+# supercronic crontab — single-binary cron running with user privileges (no root needed)
+#
+# Once a day, upgrade yt-dlp to the latest version inside the venv, then
+# SIGTERM the bot process; the entrypoint exits and the docker restart policy
+# brings the container back up running the updated yt-dlp.
+#
+# Schedule: daily at 18:15 UTC (= 03:15 KST) — the lowest-traffic window.
+#
+# To disable cron, just delete this file
+# (the entrypoint auto-detects this and skips supercronic).
+# ============================================================================
+
+# m  h  dom mon dow  command
+15 18  *   *   *    /app/venv/bin/pip install --upgrade --no-cache-dir "yt-dlp[default]" && pkill -TERM -f music_bot.py

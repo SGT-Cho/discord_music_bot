@@ -1,0 +1,46 @@
+# Git
+.git
+.github
+.gitignore
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.env
+
+# Local-only secrets and session files
+cookies.txt
+
+# Archive and tests
+archive
+tests
+
+# Documentation
+*.md
+README.md
+CLAUDE.md
+
+# IDE/Editor configs
+.vscode
+.serena
+.taskmaster
+.roo
+.claude
+.cursor
+.windsurf
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Audio cache
+cache/
+music_library/
