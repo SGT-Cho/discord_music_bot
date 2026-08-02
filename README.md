@@ -5,7 +5,7 @@
 ![Docker](https://img.shields.io/badge/docker-compose%20ready-2496ED?logo=docker&logoColor=white)
 ![discord.py](https://img.shields.io/badge/discord.py-2.7%2B-5865F2?logo=discord&logoColor=white)
 
-**English** · *(translations coming soon)*
+**English** | [한국어](docs/i18n/README.ko.md) | [中文](docs/i18n/README.zh-CN.md) | [日本語](docs/i18n/README.ja.md) | [Español](docs/i18n/README.es.md) | [Русский](docs/i18n/README.ru.md) | [Deutsch](docs/i18n/README.de.md) | [Français](docs/i18n/README.fr.md) | [Italiano](docs/i18n/README.it.md)
 
 A portfolio-oriented Discord music bot reference implementation built with
 `discord.py`, `yt-dlp`, and FFmpeg.
