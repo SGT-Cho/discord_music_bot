@@ -107,7 +107,9 @@ jobs:
     uses: ./.github/workflows/publish.yml
     with:
       ytdlp_version: ${{ needs.verify.outputs.version }}
-    secrets: inherit
+    # No `secrets: inherit` on purpose. It would hand this job every secret in
+    # the repository — including the Discord token — when all it needs is
+    # GITHUB_TOKEN, which a called workflow already receives.
 
   report:
     name: Report result
