@@ -17,6 +17,7 @@ from collections import deque
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from src.utils import ErrorHandler, measure_performance, performance_monitor, redact_input
+from src.utils.notifier import Notifier
 from src.utils.ytdl_manager import YTDLManager, managed_ytdl
 from src.utils.connection_monitor import ConnectionMonitor, get_connection_monitor
 from src.audio import FFmpegOptimizer, stream_recovery, bitrate_manager
@@ -410,16 +411,16 @@ class YTDLSource(discord.PCMVolumeTransformer):
                         logger.debug(f"[from_url] Skipping invalid playlist entry {i+1}.")
                         continue
                     
-                    # Use the URL directly if present
-                    if entry_meta.get('url') and entry_meta['url'].startswith('http'):
-                        standard_video_url = entry_meta['url']
-                    else:
+                    # Entries carrying a usable URL go straight through. The rest
+                    # are checked by ID so that playlist-shaped entries are
+                    # dropped here; process_playlist_item below rebuilds the URL
+                    # from the entry itself, so nothing needs to be kept.
+                    if not (entry_meta.get('url') and entry_meta['url'].startswith('http')):
                         video_id_from_entry = entry_meta.get("id")
                         entry_title_from_meta = entry_meta.get("title", "No title")
                         if not video_id_from_entry or id_is_playlist_heuristic(video_id_from_entry):
                             logger.debug(f"[from_url] Playlist entry '{entry_title_from_meta}' ID '{video_id_from_entry}' is not a valid video ID. Skipping.")
                             continue
-                        standard_video_url = f"https://www.youtube.com/watch?v={video_id_from_entry}"
                     # Create async task
                     async def process_playlist_item(item_meta, item_index):
                         try:
@@ -735,6 +736,7 @@ class Music(commands.Cog):
     # Settings for avoiding duplicate autoplay tracks
     AUTOPLAY_HISTORY_SIZE = 30  # keep history of last 30 tracks
     AUTOPLAY_MAX_RETRIES = 5   # max retries on duplicates
+    STREAM_RECOVERY_MAX_ATTEMPTS = 3  # re-extract attempts before giving up on a track
     AUTOPLAY_REFRESH_INTERVAL = 10  # refresh reference track every 10 tracks
 
     def __init__(self, bot):
@@ -760,10 +762,22 @@ class Music(commands.Cog):
         self._connection_monitor = None
         # Voice connection monitor tasks (one per guild)
         self._voice_monitor_tasks: dict[int, asyncio.Task] = {}
+        # Error notifications (user-facing + operational)
+        self.notifier = Notifier(bot)
+        # Last text channel a command was used in, per guild. The nowplaying
+        # message is the preferred notification target, but it does not exist
+        # yet when the very first track fails to load.
+        self.last_command_channel: dict[int, discord.abc.Messageable] = {}
+        # Consecutive load/playback failures, so a fully broken queue reports
+        # once instead of once per track.
+        self._consecutive_failures: dict[int, int] = {}
     
     async def cog_load(self):
         for guild in self.bot.guilds:
             await self.reset_state(guild.id)
+
+        # Background cache downloads fail silently otherwise
+        audio_cache_manager.attach_notifier(self.notifier)
 
         # Start periodic cleanup task to prevent TCP connection leaks
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
@@ -795,6 +809,39 @@ class Music(commands.Cog):
         for task in self._voice_monitor_tasks.values():
             task.cancel()
         self._voice_monitor_tasks.clear()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Remember where each command came from, then allow it.
+
+        Runs for every app command in this cog. The channel recorded here is
+        the fallback notification target for failures that happen before a
+        nowplaying message exists.
+        """
+        if interaction.guild_id and interaction.channel:
+            self.last_command_channel[interaction.guild_id] = interaction.channel
+        return True
+
+    def session_channel(self, guild_id: int):
+        """Return the text channel this guild's music session belongs to.
+
+        Prefers the channel holding the nowplaying message, since that is
+        where the user is already looking, and falls back to the last channel
+        a command was used in. Returns None when the bot has never posted for
+        this guild, in which case callers log instead of notifying.
+        """
+        message = self.nowplaying_message.get(guild_id)
+        if message is not None:
+            return message.channel
+        return self.last_command_channel.get(guild_id)
+
+    async def notify_user(self, guild_id: int, kind: str, message_key: str, **kwargs):
+        """Post a user-facing notice to the guild's music channel."""
+        return await self.notifier.notify_user(
+            self.session_channel(guild_id),
+            guild_id=guild_id,
+            kind=kind,
+            message=t(message_key, **kwargs),
+        )
 
     async def _periodic_cleanup(self):
         """Periodic garbage collection and stats logging (hourly)"""
@@ -897,6 +944,10 @@ class Music(commands.Cog):
         self.autoplay_count[guild_id] = 0
         self._reconnecting[guild_id] = False
         self._intentional_disconnect[guild_id] = False
+        # Start the next session with a clean notification slate, so its first
+        # error is never swallowed by the previous session's cooldown.
+        self._consecutive_failures[guild_id] = 0
+        self.notifier.reset(guild_id)
         # Clean up voice monitor tasks
         if guild_id in self._voice_monitor_tasks:
             self._voice_monitor_tasks[guild_id].cancel()
@@ -991,11 +1042,11 @@ class Music(commands.Cog):
                   # or on the first play_next after the message was deleted by stop, etc.
                 self.nowplaying_message[guild_id] = await target_channel.send(embed=nowplaying_embed)
         except (discord.NotFound, discord.HTTPException) as e: # NotFound: message already deleted, HTTPException: other issues
-            # print(f"[DEBUG UI Guild {guild_id}] Failed to edit/send nowplaying message: {e}. Retrying with a new one.")
+            logger.debug(f"[UI Guild {guild_id}] Could not update the nowplaying message ({e}); sending a new one.")
             try: # On failure, send a new message (if we have a channel)
                 self.nowplaying_message[guild_id] = await target_channel.send(embed=nowplaying_embed)
             except Exception as e_send:
-                # print(f"[DEBUG UI Guild {guild_id}] Sending a new nowplaying message also failed: {e_send}")
+                logger.warning(f"[UI Guild {guild_id}] Failed to post a nowplaying message: {e_send}")
                 if guild_id in self.nowplaying_message : del self.nowplaying_message[guild_id] # remove key on failure
 
 
@@ -1261,9 +1312,16 @@ class Music(commands.Cog):
             await self.reset_state(guild_id)
     
     async def play_next_after_song(self, error, guild_id):
+        # Set when the track is given up on, so the fall-through below knows
+        # whether to tell the channel the stream died or simply failed.
+        recovery_outcome = None
+        failed_title = t("track_unknown")
         if error:
             logger.error(f"[Guild {guild_id}] Playback error: {error}")
-            
+            failed_track = self.current.get(guild_id)
+            if failed_track is not None:
+                failed_title = getattr(failed_track, "title", failed_title)
+
             # Attempt recovery on stream errors
             error_str = str(error).lower()
             if any(keyword in error_str for keyword in ['ffmpeg', 'stream', 'broken pipe', 'connection', '403', '404']):
@@ -1278,7 +1336,7 @@ class Music(commands.Cog):
                     if not hasattr(current_track, '_recovery_attempts'):
                         current_track._recovery_attempts = 0
                     
-                    if current_track._recovery_attempts < 3:
+                    if current_track._recovery_attempts < self.STREAM_RECOVERY_MAX_ATTEMPTS:
                         current_track._recovery_attempts += 1
                         
                         try:
@@ -1317,8 +1375,32 @@ class Music(commands.Cog):
                                         return
                         except Exception as recovery_error:
                             logger.error(f"[Guild {guild_id}] Recovery failed: {recovery_error}")
+                            await self.notifier.notify_ops_exception(
+                                kind="recovery_failed",
+                                title=t("notify_ops_playback_title"),
+                                context=t("notify_ops_playback_body", guild_id=guild_id, title=failed_title),
+                                error=recovery_error,
+                            )
                     else:
                         logger.warning(f"[Guild {guild_id}] Max recovery attempts reached for: {current_track.title}")
+                        recovery_outcome = "exhausted"
+
+        if error:
+            # The track is being abandoned: every path that could have saved it
+            # already returned. Tell the channel, because from the listener's
+            # side the music simply stopped.
+            self._consecutive_failures[guild_id] = self._consecutive_failures.get(guild_id, 0) + 1
+            if recovery_outcome == "exhausted":
+                await self.notify_user(
+                    guild_id, "stream_exhausted", "notify_stream_exhausted",
+                    title=failed_title, attempts=self.STREAM_RECOVERY_MAX_ATTEMPTS,
+                )
+            else:
+                await self.notify_user(
+                    guild_id, "track_failed", "notify_track_failed", title=failed_title,
+                )
+        else:
+            self._consecutive_failures[guild_id] = 0
 
         logger.info(f"[AfterSong Guild {guild_id}] Song finished, checking voice connection...")
 

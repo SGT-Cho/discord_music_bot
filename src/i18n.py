@@ -197,6 +197,21 @@ MESSAGES = {
         "cache_field_downloading": "Downloading",
         "cache_field_downloading_ids": "Downloading track IDs",
         "cache_footer": "Cache path: {path}",
+        # notifier: user-facing playback notices
+        "notify_suppressed_suffix": "_…and {count} more like this in the last minute._",
+        "notify_track_failed": "⚠️ Couldn't play **{title}** — skipping to the next track.",
+        "notify_stream_exhausted": "⚠️ **{title}** kept dropping out after {attempts} recovery attempts — skipping it.",
+        "notify_extract_failed": "⚠️ Couldn't load **{query}**. YouTube may be blocking the request; try again in a moment.",
+        "notify_queue_stalled": "⚠️ Playback stopped because the last {count} tracks all failed to load.",
+        # notifier: operational notices
+        "notify_ops_cache_title": "Audio cache download failed",
+        "notify_ops_cache_body": "Video `{video_id}` could not be cached.",
+        "notify_ops_playback_title": "Playback error",
+        "notify_ops_playback_body": "Guild `{guild_id}` failed on **{title}**.",
+        "notify_ops_extract_title": "Extraction error",
+        "notify_ops_extract_body": "yt-dlp failed to resolve a source.",
+        "notify_ops_startup_title": "Bot started",
+        "notify_ops_startup_body": "Connected as **{bot_name}** in {guild_count} servers.\nyt-dlp `{ytdlp_version}` · FFmpeg `{ffmpeg_version}`",
     },
     "ko": {
         # error_handler
@@ -377,6 +392,21 @@ MESSAGES = {
         "cache_field_downloading": "다운로드 중",
         "cache_field_downloading_ids": "다운로드 중인 곡 ID",
         "cache_footer": "캐시 경로: {path}",
+        # notifier: 사용자 알림
+        "notify_suppressed_suffix": "_…최근 1분간 같은 오류 {count}건이 더 있었습니다._",
+        "notify_track_failed": "⚠️ **{title}** 재생에 실패해서 다음 곡으로 넘어갑니다.",
+        "notify_stream_exhausted": "⚠️ **{title}** 스트림이 {attempts}회 복구 시도 후에도 계속 끊겨서 건너뜁니다.",
+        "notify_extract_failed": "⚠️ **{query}** 를 불러오지 못했습니다. YouTube가 요청을 막고 있을 수 있으니 잠시 후 다시 시도해주세요.",
+        "notify_queue_stalled": "⚠️ 최근 {count}곡이 연속으로 실패해서 재생을 멈췄습니다.",
+        # notifier: 운영 알림
+        "notify_ops_cache_title": "오디오 캐시 다운로드 실패",
+        "notify_ops_cache_body": "영상 `{video_id}` 캐시에 실패했습니다.",
+        "notify_ops_playback_title": "재생 오류",
+        "notify_ops_playback_body": "길드 `{guild_id}` 에서 **{title}** 재생이 실패했습니다.",
+        "notify_ops_extract_title": "추출 오류",
+        "notify_ops_extract_body": "yt-dlp가 소스를 해석하지 못했습니다.",
+        "notify_ops_startup_title": "봇 기동",
+        "notify_ops_startup_body": "**{bot_name}** 로 {guild_count}개 서버에 연결되었습니다.\nyt-dlp `{ytdlp_version}` · FFmpeg `{ffmpeg_version}`",
     },
 }
 

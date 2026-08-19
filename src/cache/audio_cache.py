@@ -9,6 +9,7 @@ from typing import Optional
 import yt_dlp
 
 from ..utils.redaction import redact_input
+from ..i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,36 @@ class AudioCacheManager:
         self._download_locks: dict[str, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
         self._downloading: set[str] = set()
+        # Set by the Music cog once the bot is connected. Cache downloads run
+        # in the background, so without this their failures are invisible.
+        self.notifier = None
         logger.info(f"[Cache] AudioCacheManager initialized: {self.cache_dir}")
+
+    def attach_notifier(self, notifier) -> None:
+        """Route cache failures to the operational notification channel."""
+        self.notifier = notifier
+
+    async def _report_failure(self, video_id: str, error: Optional[BaseException] = None):
+        """Send a cache failure to the ops channel, if one is configured."""
+        if self.notifier is None:
+            return
+        try:
+            body = t("notify_ops_cache_body", video_id=video_id)
+            if error is not None:
+                await self.notifier.notify_ops_exception(
+                    kind="cache_failed",
+                    title=t("notify_ops_cache_title"),
+                    context=body,
+                    error=error,
+                )
+            else:
+                await self.notifier.notify_ops(
+                    kind="cache_failed",
+                    title=t("notify_ops_cache_title"),
+                    message=body,
+                )
+        except Exception as e:  # notification must never break the caller
+            logger.warning(f"[Cache] Failed to report cache failure: {e}")
 
     def _mp3_path(self, video_id: str) -> Path:
         return self.cache_dir / f"{video_id}.mp3"
@@ -131,6 +161,7 @@ class AudioCacheManager:
 
                 if actual_tmp is None:
                     logger.error(f"[Cache] Download completed but MP3 file not found for {video_id}")
+                    await self._report_failure(video_id)
                     return False
 
                 # Atomic rename
@@ -143,6 +174,7 @@ class AudioCacheManager:
 
             except Exception as e:
                 logger.error(f"[Cache] Download error for {video_id}: {redact_input(e)}")
+                await self._report_failure(video_id, e)
                 # Clean up temp files
                 for f in self.cache_dir.iterdir():
                     if f.name.startswith(f"{video_id}.tmp"):

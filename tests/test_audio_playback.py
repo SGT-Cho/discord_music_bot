@@ -53,19 +53,14 @@ async def test_latency_measurement():
 def test_audio_source_creation():
     """Audio source creation test (without a real URL)"""
     print("\n🎵 Testing Audio Source Creation...")
-    
-    # A real URL is required, so only test option generation here
-    test_url = "https://example.com/stream"
-    
+
+    # Creating a real source needs a reachable URL, so this only covers the
+    # options every source type is built with.
     for source_type in ['youtube', 'spotify', 'local']:
-        try:
-            # Actual creation would fail, so only check the options
-            options = FFmpegOptimizer.get_optimized_options(source_type)
-            print(f"✅ {source_type} audio source options ready")
-        except Exception as e:
-            print(f"❌ {source_type} audio source error: {e}")
-    
-    return True
+        options = FFmpegOptimizer.get_optimized_options(source_type)
+        assert 'options' in options, f"{source_type} produced no output options"
+        assert 'before_options' in options, f"{source_type} produced no before_options"
+        print(f"✅ {source_type} audio source options ready")
 
 async def main():
     """Main test function"""
