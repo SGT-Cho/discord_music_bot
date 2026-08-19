@@ -156,6 +156,41 @@ than the stable channel ships fixes, so a stable release that cannot fetch audio
 is worth less than a nightly that can. The canary is what makes this safe: a
 nightly only reaches the bot after passing against real YouTube.
 
+## Running your own fork
+
+This repository exists to be taken and run as someone else's bot, so a few
+things about the pipeline are worth knowing before you fork it.
+
+**The default image is not your code.** `docker-compose.yml` pulls the upstream
+image so a fresh clone runs with no registry setup at all. That is the right
+default for running the bot as-is, and the wrong one the moment you change
+something. Two ways out:
+
+```bash
+# build your working tree locally
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+```bash
+# or point at your own published package, in .env
+BOT_IMAGE="ghcr.io/<your-user>/<your-repo>:latest"
+```
+
+**Publishing adapts to your fork automatically.** The publish workflow derives
+its image name from the repository it runs in, so it pushes to your namespace,
+not this one. Nothing to edit.
+
+**Actions are off in a new fork.** GitHub disables workflows in forks until you
+enable them on the Actions tab, and scheduled workflows stay off until then —
+so the canary will not run on its own until you turn it on. GitHub also pauses
+schedules in repositories with no activity for 60 days.
+
+**Secrets do not come with the fork.** You get the workflows, not the values,
+which is also why a fork's pull request cannot read the upstream repository's
+secrets. Notifications are opt-in and absent by default: with nothing
+configured, the notify step prints a note and succeeds, and verdicts still land
+in the workflow run summary.
+
 ## Optional: notifications
 
 Two mechanisms, because they run in different places — GitHub Actions has no

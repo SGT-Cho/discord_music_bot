@@ -12,6 +12,10 @@
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 services:
   music-bot:
+    # Defaults to the upstream image so a fresh clone runs without any registry
+    # setup. If you forked this and changed the code, that default is not your
+    # code — set BOT_IMAGE to your own package, or build locally with
+    # docker-compose.dev.yml. See "Running your own fork" in docs/DEPLOYMENT.md.
     image: ${BOT_IMAGE:-ghcr.io/sgt-cho/discord_music_bot:latest}
     container_name: discord-music-bot
     restart: unless-stopped
