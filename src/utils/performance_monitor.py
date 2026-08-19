@@ -82,7 +82,7 @@ def measure_performance(operation_name: str):
                 if elapsed:
                     logger.debug(f"{operation_name} took {elapsed:.3f}s")
                 return result
-            except Exception as e:
+            except Exception:
                 performance_monitor.end_timer(operation_name)
                 raise
         
@@ -95,7 +95,7 @@ def measure_performance(operation_name: str):
                 if elapsed:
                     logger.debug(f"{operation_name} took {elapsed:.3f}s")
                 return result
-            except Exception as e:
+            except Exception:
                 performance_monitor.end_timer(operation_name)
                 raise
         

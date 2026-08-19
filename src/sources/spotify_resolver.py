@@ -68,9 +68,6 @@ class SpotifyResolver:
             if not album:
                 return []
             
-            # Album artist
-            album_artist = album['artists'][0]['name'] if album['artists'] else 'Unknown'
-            
             search_queries = []
             
             # Fetch all tracks in the album

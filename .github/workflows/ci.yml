@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio ruff
+
+      - name: Lint
+        # Narrow rule set: undefined names, unused locals, broken f-strings —
+        # the things that raise at runtime rather than style preferences.
+        run: ruff check .
+
+      - name: Byte-compile every module
+        # Catches syntax errors in files no test happens to import.
+        run: python -m compileall -q music_bot.py src setup.py
+
+      - name: Test
+        # Network-marked tests are excluded: they hit real YouTube, so a
+        # failure there means "YouTube changed", not "this commit is broken".
+        # The yt-dlp canary workflow covers that separately.
+        run: pytest -m "not network" -v
+
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Required to build linux/arm64 on an amd64 runner: without the QEMU
+      # binfmt handlers registered, buildx has no way to execute arm64 steps.
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          # Deployment targets arm64 (Apple Silicon); build both so a change
+          # that breaks either architecture fails here instead of at deploy.
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -91,13 +91,13 @@ python music_bot.py
 
 ```bash
 cp .env.example .env   # then fill in your Discord bot token
-docker compose up -d --build
+docker compose up -d
 ```
 
 - 오디오는 호스트의 `./music_library`에 캐시됩니다(컨테이너 내부의
   `/app/cache/audio`에 마운트됨).
-- `supercronic`이 매일 18:15 UTC에 `yt-dlp`를 업그레이드하고 봇을
-  재시작하므로, 추출기(extractor) 수정 사항이 수동 개입 없이 반영됩니다.
+- `yt-dlp` 업데이트는 CI가 실제 YouTube로 검증을 마친 새 이미지로 전달되며,
+  `bin/update.sh`가 주기적으로 받아옵니다. [docs/DEPLOYMENT.md](../DEPLOYMENT.md) 참고.
 - 컨테이너는 기본적으로 UID/GID `1001`로 실행됩니다. 호스트 사용자와 맞추려면
   `APP_UID` / `APP_GID` 빌드 인자로 재정의합니다.
 - TCP 연결이 과도하게 쌓이면 헬스체크가 컨테이너를 재시작합니다.
@@ -114,6 +114,7 @@ docker compose up -d --build
 | `SPOTIFY_CLIENT_ID` | 아니요 | Spotify Web API를 통한 Spotify 링크 변환을 활성화합니다 |
 | `SPOTIFY_CLIENT_SECRET` | 아니요 | `SPOTIFY_CLIENT_ID`와 함께 사용합니다. 둘 다 설정하지 않으면 Spotify 링크는 YouTube 검색으로 대체됩니다 |
 | `AUDIO_CACHE_DIR` | 아니요 | 오디오 캐시 디렉터리 (기본값: `cache/audio`) |
+| `OPS_CHANNEL_ID` | 아니요 | 운영자용 알림 채널 (캐시·yt-dlp 실패). 설정하지 않으면 로그에만 남습니다 |
 
 `.env`, 봇 토큰, 서비스 자격 증명, 쿠키, 다운로드된 미디어, 로컬
 `music_library/` 캐시는 절대 커밋해서는 안 됩니다.
@@ -128,10 +129,11 @@ src/cache/               # optional local audio cache implementation
 src/sources/             # source detection and metadata resolvers
 src/utils/               # error handling, monitoring, and yt-dlp lifecycle
 tests/                   # standalone test scripts
-Dockerfile               # container image (non-root, supercronic + Deno)
+Dockerfile               # container image (non-root, Deno for JS challenges)
 docker-compose.yml       # single-service deployment with healthcheck
-bin/docker-entrypoint.sh # runs the bot alongside the update cron
-config/crontab           # daily yt-dlp upgrade schedule
+bin/docker-entrypoint.sh # launches the bot
+bin/update.sh            # pulls the published image and restarts
+tools/ytdlp_smoke.py     # canary: checks yt-dlp against real YouTube
 requirements.txt         # runtime Python dependencies
 ```
 
