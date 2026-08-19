@@ -1,0 +1,20 @@
+# Local development override: build from the working tree instead of pulling
+# the published image.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# Pass --build-arg equivalents through the `args` block below to test a
+# specific yt-dlp version before asking CI to publish it.
+services:
+  music-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID:-1001}
+        APP_GID: ${APP_GID:-1001}
+        # "nightly" tracks pre-releases; set YT_DLP_VERSION for an exact pin.
+        YT_DLP_CHANNEL: ${YT_DLP_CHANNEL:-nightly}
+        YT_DLP_VERSION: ${YT_DLP_VERSION:-}
+      network: host  # works around network issues
+    image: music-bot-local

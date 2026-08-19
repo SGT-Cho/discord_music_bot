@@ -90,13 +90,13 @@ python music_bot.py
 
 ```bash
 cp .env.example .env   # then fill in your Discord bot token
-docker compose up -d --build
+docker compose up -d
 ```
 
 - 音频缓存在宿主机的 `./music_library` 目录（挂载到容器内的
   `/app/cache/audio`）。
-- `supercronic` 每天 18:15 UTC 升级 `yt-dlp` 并重启机器人，
-  使提取器修复无需人工干预即可生效。
+- `yt-dlp` 更新以新镜像的形式发布，CI 已针对真实 YouTube 验证过，
+  由 `bin/update.sh` 定期拉取。参见 [docs/DEPLOYMENT.md](../DEPLOYMENT.md)。
 - 容器默认以 UID/GID `1001` 运行；可通过 `APP_UID` / `APP_GID`
   构建参数覆盖，以匹配宿主机用户。
 - 健康检查会在 TCP 连接堆积时重启容器。
@@ -113,6 +113,7 @@ docker compose up -d --build
 | `SPOTIFY_CLIENT_ID` | 否 | 启用通过 Spotify Web API 解析 Spotify 链接 |
 | `SPOTIFY_CLIENT_SECRET` | 否 | 与 `SPOTIFY_CLIENT_ID` 配对使用；若两者不全，Spotify 链接会回退到 YouTube 搜索 |
 | `AUDIO_CACHE_DIR` | 否 | 音频缓存目录（默认：`cache/audio`） |
+| `OPS_CHANNEL_ID` | 否 | 运维通知频道（缓存与 yt-dlp 失败）；不设置则仅记录到日志 |
 
 切勿提交 `.env`、机器人令牌、服务凭据、Cookie、已下载的媒体
 文件或本地 `music_library/` 缓存。
@@ -127,10 +128,11 @@ src/cache/               # optional local audio cache implementation
 src/sources/             # source detection and metadata resolvers
 src/utils/               # error handling, monitoring, and yt-dlp lifecycle
 tests/                   # standalone test scripts
-Dockerfile               # container image (non-root, supercronic + Deno)
+Dockerfile               # container image (non-root, Deno for JS challenges)
 docker-compose.yml       # single-service deployment with healthcheck
-bin/docker-entrypoint.sh # runs the bot alongside the update cron
-config/crontab           # daily yt-dlp upgrade schedule
+bin/docker-entrypoint.sh # launches the bot
+bin/update.sh            # pulls the published image and restarts
+tools/ytdlp_smoke.py     # canary: checks yt-dlp against real YouTube
 requirements.txt         # runtime Python dependencies
 ```
 

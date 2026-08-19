@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd job that runs bin/update.sh every 6 hours.
+
+  launchd rather than cron because this runs on a laptop: if the machine is
+  asleep at the scheduled time, launchd runs the job once on wake instead of
+  skipping the window entirely.
+
+  Install (edit the two paths first — launchd does not expand ~ or $HOME):
+
+    cp config/com.musicbot.update.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.musicbot.update.plist
+
+  Check on it:
+
+    launchctl list | grep musicbot
+    tail -f /tmp/musicbot-update.log
+
+  Remove:
+
+    launchctl unload ~/Library/LaunchAgents/com.musicbot.update.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.musicbot.update</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <!-- Absolute path to your checkout; launchd does not expand ~ or $HOME. -->
+        <string>/Users/winter/Documents/discord-bot/music-bot/bin/update.sh</string>
+    </array>
+
+    <!-- Docker Desktop puts the `docker` CLI here; launchd jobs start with a
+         minimal PATH that does not include it. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>21600</integer>
+
+    <!-- Do not fire during the boot storm; the first check can wait. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/musicbot-update.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/musicbot-update.log</string>
+</dict>
+</plist>

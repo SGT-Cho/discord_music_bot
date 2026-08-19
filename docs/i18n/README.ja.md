@@ -82,12 +82,12 @@ python music_bot.py
 
 ```bash
 cp .env.example .env   # then fill in your Discord bot token
-docker compose up -d --build
+docker compose up -d
 ```
 
 - 音声はホスト側の `./music_library` にキャッシュされます(コンテナ内では
   `/app/cache/audio` にマウントされます)。
-- `supercronic` が毎日 18:15 UTC に `yt-dlp` をアップグレードしてボットを再起動するため、エクストラクターの修正が手動操作なしで反映されます。
+- `yt-dlp` の更新は、CI が実際の YouTube に対して検証済みの新しいイメージとして届き、`bin/update.sh` が定期的に取得します。[docs/DEPLOYMENT.md](../DEPLOYMENT.md) を参照してください。
 - コンテナはデフォルトで UID/GID `1001` として動作します。ホストユーザーに合わせるには、ビルド引数
   `APP_UID` / `APP_GID` で上書きしてください。
 - TCP 接続が滞留した場合は、ヘルスチェックがコンテナを再起動します。
@@ -103,6 +103,7 @@ docker compose up -d --build
 | `SPOTIFY_CLIENT_ID` | いいえ | Spotify Web API による Spotify リンクの解決を有効にします |
 | `SPOTIFY_CLIENT_SECRET` | いいえ | `SPOTIFY_CLIENT_ID` とセットで使用します。両方が揃っていない場合、Spotify リンクは YouTube 検索にフォールバックします |
 | `AUDIO_CACHE_DIR` | いいえ | 音声キャッシュディレクトリ(デフォルト: `cache/audio`) |
+| `OPS_CHANNEL_ID` | いいえ | 運用者向け通知チャンネル(キャッシュ・yt-dlp の失敗)。未設定ならログのみに記録されます |
 
 `.env`、ボットトークン、サービスの認証情報、Cookie、ダウンロード済みメディア、ローカルの `music_library/` キャッシュは、決してコミットしないでください。
 
@@ -116,10 +117,11 @@ src/cache/               # optional local audio cache implementation
 src/sources/             # source detection and metadata resolvers
 src/utils/               # error handling, monitoring, and yt-dlp lifecycle
 tests/                   # standalone test scripts
-Dockerfile               # container image (non-root, supercronic + Deno)
+Dockerfile               # container image (non-root, Deno for JS challenges)
 docker-compose.yml       # single-service deployment with healthcheck
-bin/docker-entrypoint.sh # runs the bot alongside the update cron
-config/crontab           # daily yt-dlp upgrade schedule
+bin/docker-entrypoint.sh # launches the bot
+bin/update.sh            # pulls the published image and restarts
+tools/ytdlp_smoke.py     # canary: checks yt-dlp against real YouTube
 requirements.txt         # runtime Python dependencies
 ```
 

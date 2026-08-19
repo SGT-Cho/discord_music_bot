@@ -1,0 +1,78 @@
+name: Publish image
+
+# Builds the deployment image and pushes it to GHCR.
+#
+# Deployment is pull-based: the bot runs on a machine GitHub cannot reach, so
+# nothing here connects to it. Publishing a new `latest` is the whole handoff —
+# Watchtower on that machine notices and restarts the container.
+
+on:
+  workflow_call:
+    inputs:
+      ytdlp_version:
+        description: "Exact yt-dlp version to pin into the image"
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      ytdlp_version:
+        description: "Exact yt-dlp version to pin (blank = newest stable)"
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  group: publish-image
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Build and push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        env:
+          YTDLP_VERSION: ${{ inputs.ytdlp_version }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tags="${image}:latest,${image}:sha-${GITHUB_SHA::7}"
+          if [ -n "$YTDLP_VERSION" ]; then
+            # A per-version tag is what makes rollback a one-liner: redeploy
+            # the previous ytdlp-* tag instead of rebuilding anything.
+            tags="${tags},${image}:ytdlp-${YTDLP_VERSION}"
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "Publishing: $tags"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # linux/arm64 is the deployment target (Apple Silicon); amd64 is kept
+          # so the image still runs on an x86 host without a rebuild.
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            YT_DLP_VERSION=${{ inputs.ytdlp_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

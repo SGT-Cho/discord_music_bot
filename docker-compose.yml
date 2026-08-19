@@ -1,12 +1,18 @@
+# Deployment compose file.
+#
+# Runs the image CI publishes rather than building locally. CI verifies yt-dlp
+# against real YouTube before publishing, so what lands here has already been
+# checked, and a rollback is a tag change instead of a rebuild.
+#
+# Updates are pulled by bin/update.sh on a timer — see docs/DEPLOYMENT.md.
+# Nothing here has access to the Docker socket, and no third-party agent runs
+# alongside the bot.
+#
+# For local development against your working tree:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 services:
   music-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        APP_UID: ${APP_UID:-1001}
-        APP_GID: ${APP_GID:-1001}
-      network: host  # works around network issues
+    image: ${BOT_IMAGE:-ghcr.io/sgt-cho/discord_music_bot:latest}
     container_name: discord-music-bot
     restart: unless-stopped
     env_file: .env

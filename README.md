@@ -92,13 +92,14 @@ self-updating `yt-dlp`:
 
 ```bash
 cp .env.example .env   # then fill in your Discord bot token
-docker compose up -d --build
+docker compose up -d
 ```
 
 - Audio is cached to `./music_library` on the host (mounted at
   `/app/cache/audio` in the container).
-- `supercronic` upgrades `yt-dlp` daily at 18:15 UTC and restarts the bot so
-  extractor fixes land without manual intervention.
+- `yt-dlp` updates arrive as a new image that CI has already verified against
+  real YouTube; `bin/update.sh` pulls it on a timer. See
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - The container runs as UID/GID `1001` by default; override with the
   `APP_UID` / `APP_GID` build args to match your host user.
 - A healthcheck restarts the container if TCP connections pile up.
@@ -115,6 +116,7 @@ Run `python setup.py` for a guided configuration, or copy `.env.example` to
 | `SPOTIFY_CLIENT_ID` | No | Enables Spotify link resolution via the Spotify Web API |
 | `SPOTIFY_CLIENT_SECRET` | No | Paired with `SPOTIFY_CLIENT_ID`; without both, Spotify links fall back to a YouTube search |
 | `AUDIO_CACHE_DIR` | No | Audio cache directory (default: `cache/audio`) |
+| `OPS_CHANNEL_ID` | No | Channel for operator-only notifications (cache and yt-dlp failures); unset keeps them in the logs |
 
 Never commit `.env`, bot tokens, service credentials, cookies, downloaded
 media, or the local `music_library/` cache.
@@ -129,10 +131,11 @@ src/cache/               # optional local audio cache implementation
 src/sources/             # source detection and metadata resolvers
 src/utils/               # error handling, monitoring, and yt-dlp lifecycle
 tests/                   # standalone test scripts
-Dockerfile               # container image (non-root, supercronic + Deno)
+Dockerfile               # container image (non-root, Deno for JS challenges)
 docker-compose.yml       # single-service deployment with healthcheck
-bin/docker-entrypoint.sh # runs the bot alongside the update cron
-config/crontab           # daily yt-dlp upgrade schedule
+bin/docker-entrypoint.sh # launches the bot
+bin/update.sh            # pulls the published image and restarts
+tools/ytdlp_smoke.py     # canary: checks yt-dlp against real YouTube
 requirements.txt         # runtime Python dependencies
 ```
 

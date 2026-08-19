@@ -1,0 +1,148 @@
+name: yt-dlp canary
+
+# YouTube breaks yt-dlp extraction on its own schedule, so the question this
+# answers is not "did our code change?" but "does the newest yt-dlp still work
+# against real YouTube right now?".
+#
+# On a pass it builds and publishes an image pinned to that exact version, so
+# the running bot picks up a *verified* extractor rather than whatever was
+# newest at deploy time. On a failure it publishes nothing and reports, and
+# the deployed image keeps working with the version it already has.
+
+on:
+  schedule:
+    # Twice a day. Nightly yt-dlp builds land roughly daily, and YouTube-side
+    # breakage is worth catching within hours rather than at the next push.
+    - cron: "0 4,16 * * *"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "yt-dlp channel to verify"
+        type: choice
+        options: [nightly, stable]
+        default: nightly
+
+concurrency:
+  group: ytdlp-canary
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CHANNEL: ${{ inputs.channel || 'nightly' }}
+
+jobs:
+  verify:
+    name: Smoke test yt-dlp
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.smoke.outputs.version }}
+      verdict: ${{ steps.smoke.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install yt-dlp (${{ env.CHANNEL }})
+        run: |
+          python -m pip install --upgrade pip
+          if [ "$CHANNEL" = "nightly" ]; then
+            pip install --upgrade --pre "yt-dlp[default]"
+          else
+            pip install --upgrade "yt-dlp[default]"
+          fi
+          # The YouTube extractor needs a JS runtime for the signature solver.
+          curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$HOME/.deno" sh -s -- -y
+          echo "$HOME/.deno/bin" >> "$GITHUB_PATH"
+
+      - name: Smoke test
+        id: smoke
+        env:
+          SMOKE_SUMMARY_PATH: ${{ runner.temp }}/smoke.json
+        run: |
+          version="$(yt-dlp --version)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          set +e
+          python tools/ytdlp_smoke.py
+          code=$?
+          set -e
+
+          case "$code" in
+            0) verdict=pass ;;
+            1) verdict=fail ;;
+            *) verdict=inconclusive ;;
+          esac
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## yt-dlp \`$version\` — $verdict"
+            echo
+            if [ -f "$SMOKE_SUMMARY_PATH" ]; then
+              echo '```json'
+              cat "$SMOKE_SUMMARY_PATH"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Only a hard failure stops the pipeline. "Inconclusive" means the
+          # canary could not reach a verdict (video removed, network flake);
+          # that must not publish an unverified image, but it is not evidence
+          # of a regression either.
+          [ "$verdict" = "pass" ]
+
+  publish:
+    name: Publish verified image
+    needs: verify
+    if: needs.verify.outputs.verdict == 'pass'
+    uses: ./.github/workflows/publish.yml
+    with:
+      ytdlp_version: ${{ needs.verify.outputs.version }}
+    secrets: inherit
+
+  report:
+    name: Report result
+    needs: [verify, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Notify Discord
+        # Delivery is opt-in. Configure a webhook (channel) or a bot token with
+        # a channel or user ID (DM); with none set this prints a note and
+        # succeeds, and the verdict still lands in the run summary.
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.OPS_DISCORD_WEBHOOK }}
+          DISCORD_BOT_TOKEN: ${{ secrets.OPS_DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.OPS_DISCORD_CHANNEL_ID }}
+          DISCORD_USER_ID: ${{ secrets.OPS_DISCORD_USER_ID }}
+          VERDICT: ${{ needs.verify.outputs.verdict }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$VERDICT" in
+            pass)
+              text="✅ yt-dlp \`$VERSION\` passed the canary and was published. Hosts pick it up on their next update check."
+              ;;
+            fail)
+              text="🚨 yt-dlp \`$VERSION\` FAILED the canary — nothing was published and the running bot is untouched. <$RUN_URL>"
+              ;;
+            *)
+              text="⚠️ yt-dlp canary was inconclusive on \`$VERSION\`, so nothing was published. The canary itself needs a look. <$RUN_URL>"
+              ;;
+          esac
+          python tools/notify_discord.py "$text"
