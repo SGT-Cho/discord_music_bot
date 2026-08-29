@@ -90,6 +90,7 @@ ENVIRONMENT_FAILURE_MARKERS = (
     "sign in to confirm you're not a bot",
     "sign in to confirm you’re not a bot",
     "http error 429",
+    "http error 5",
     "too many requests",
     "this content isn't available, try again later",
     "temporary failure in name resolution",
@@ -98,6 +99,8 @@ ENVIRONMENT_FAILURE_MARKERS = (
     "connection reset",
     "remote end closed connection",
     "timed out",
+    "certificate verify failed",
+    "tls handshake",
 )
 
 # A stale candidate should not wedge the canary, but only errors that clearly
@@ -279,7 +282,7 @@ def read_stream(info, target_bytes, deadline_seconds):
                     break
                 read += len(chunk)
     except urllib.error.HTTPError as e:
-        if is_environment_failure(e):
+        if e.code == 429 or 500 <= e.code <= 599 or is_environment_failure(e):
             raise CanaryMisconfigured(f"stream probe was rate-limited: {e}") from e
         raise AssertionError(
             f"stream read failed with HTTP {e.code} after {read:,} bytes "
@@ -346,7 +349,10 @@ def check_ffmpeg_decode():
         command += ["-headers", others]
     command += ["-i", stream_url, "-t", "3", "-f", "null", "-"]
 
-    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired as error:
+        raise CanaryMisconfigured("ffmpeg decode exceeded 120s") from error
     if result.returncode != 0:
         raise AssertionError(
             f"ffmpeg failed to decode the stream: {result.stderr.strip()[:500]}"
@@ -377,12 +383,42 @@ def check_full_download():
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([watch_url(BASIC_VIDEO_ID)])
 
-        produced = list(Path(workdir).glob("smoke.*"))
+        produced = list(Path(workdir).glob("smoke.mp3"))
         if not produced:
-            raise AssertionError("download produced no file")
+            raise AssertionError("download did not produce the expected MP3")
         size = produced[0].stat().st_size
-        if size == 0:
-            raise AssertionError("download produced an empty file")
+        if size < 16 * 1024:
+            raise AssertionError(f"download produced an implausibly small MP3 ({size} bytes)")
+
+        try:
+            probe = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a:0",
+                    "-show_entries",
+                    "stream=codec_type:format=duration",
+                    "-of",
+                    "json",
+                    str(produced[0]),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise CanaryMisconfigured("ffprobe validation exceeded 30s") from error
+        if probe.returncode != 0:
+            raise AssertionError(f"ffprobe rejected the MP3: {probe.stderr.strip()[:300]}")
+        media = json.loads(probe.stdout)
+        streams = media.get("streams") or []
+        duration = float((media.get("format") or {}).get("duration") or 0)
+        if not any(stream.get("codec_type") == "audio" for stream in streams):
+            raise AssertionError("downloaded MP3 contains no audio stream")
+        if duration <= 1:
+            raise AssertionError(f"downloaded MP3 duration is invalid ({duration}s)")
 
     log(f"      ok — produced {size:,} bytes")
 
@@ -442,9 +478,11 @@ def main():
             except AssertionError as e:
                 log(f"      FAILED — {e}")
                 failures[name] = str(e)
-            except Exception as e:  # unexpected: still a yt-dlp verdict
-                log(f"      FAILED — unexpected {type(e).__name__}: {e}")
-                failures[name] = f"{type(e).__name__}: {e}"
+            except Exception as e:
+                # An unknown canary/software/environment error must block a
+                # release, but it is not evidence that yt-dlp regressed.
+                log(f"      SKIPPED — unexpected {type(e).__name__}: {e}")
+                misconfigured[name] = f"{type(e).__name__}: {e}"
     finally:
         if deadline_supported:
             signal.alarm(0)

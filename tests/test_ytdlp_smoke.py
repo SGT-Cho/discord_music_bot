@@ -12,9 +12,11 @@ from tools.ytdlp_smoke import is_candidate_unavailable, is_environment_failure
     [
         "Sign in to confirm you're not a bot",
         "HTTP Error 429: Too Many Requests",
+        "HTTP Error 503: Service Unavailable",
         "Temporary failure in name resolution",
         "The read operation timed out",
         "Remote end closed connection without response",
+        "certificate verify failed during TLS handshake",
     ],
 )
 def test_runner_and_network_failures_are_inconclusive(message):
