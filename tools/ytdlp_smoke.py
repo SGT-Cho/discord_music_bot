@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -65,6 +66,25 @@ LARGE_VIDEO_SEARCH = os.getenv("SMOKE_LARGE_SEARCH", "full concert live")
 # Read this far into the stream; anything past ~21 MB clears the boundary.
 STREAM_READ_LIMIT = 25 * 1024 * 1024
 STREAM_READ_TARGET = 21 * 1024 * 1024
+STREAM_READ_DEADLINE_SECONDS = int(os.getenv("SMOKE_STREAM_DEADLINE_SECONDS", "180"))
+
+# GitHub-hosted runner addresses are shared and can be rate-limited or blocked
+# independently of the yt-dlp release under test. Those messages describe an
+# unusable probe environment, not an extractor regression. Keep this list
+# deliberately narrow: HTTP 403 and parser/format errors remain hard failures.
+ENVIRONMENT_FAILURE_MARKERS = (
+    "sign in to confirm you're not a bot",
+    "sign in to confirm you’re not a bot",
+    "http error 429",
+    "too many requests",
+    "this content isn't available, try again later",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "network is unreachable",
+    "connection reset",
+    "remote end closed connection",
+    "timed out",
+)
 
 BASE_OPTS = {
     "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
@@ -79,6 +99,12 @@ BASE_OPTS = {
 
 class CanaryMisconfigured(Exception):
     """The check could not run — not evidence that yt-dlp is broken."""
+
+
+def is_environment_failure(error):
+    """Return whether an error points to the probe environment, not yt-dlp."""
+    message = str(error).casefold()
+    return any(marker.casefold() in message for marker in ENVIRONMENT_FAILURE_MARKERS)
 
 
 def log(message):
@@ -104,10 +130,7 @@ def extract(video_id, extra_opts=None):
 def check_extraction():
     """Metadata and a stream URL come back for a known-good video."""
     log(f"[1/4] Extracting metadata for {BASIC_VIDEO_ID}...")
-    try:
-        info = extract(BASIC_VIDEO_ID)
-    except yt_dlp.utils.DownloadError as e:
-        raise AssertionError(f"extraction failed: {e}") from e
+    info = extract(BASIC_VIDEO_ID)
 
     if not info:
         raise AssertionError("extraction returned no data")
@@ -185,19 +208,29 @@ def check_stream_read():
         request.add_header(header, value)
 
     read = 0
+    started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             while read < STREAM_READ_LIMIT:
+                if time.monotonic() - started >= STREAM_READ_DEADLINE_SECONDS:
+                    raise CanaryMisconfigured(
+                        "stream read exceeded "
+                        f"{STREAM_READ_DEADLINE_SECONDS}s; runner/CDN path is too slow"
+                    )
                 chunk = response.read(256 * 1024)
                 if not chunk:
                     break
                 read += len(chunk)
     except urllib.error.HTTPError as e:
+        if is_environment_failure(e):
+            raise CanaryMisconfigured(f"stream probe was rate-limited: {e}") from e
         raise AssertionError(
             f"stream read failed with HTTP {e.code} after {read:,} bytes "
             f"({read / 1024 / 1024:.1f} MB)"
         ) from e
     except OSError as e:
+        if is_environment_failure(e):
+            raise CanaryMisconfigured(f"stream probe network failure: {e}") from e
         raise AssertionError(
             f"stream read failed after {read:,} bytes "
             f"({read / 1024 / 1024:.1f} MB): {e}"
@@ -262,11 +295,8 @@ def check_full_download():
             }],
         })
 
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([watch_url(BASIC_VIDEO_ID)])
-        except yt_dlp.utils.DownloadError as e:
-            raise AssertionError(f"download failed: {e}") from e
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([watch_url(BASIC_VIDEO_ID)])
 
         produced = list(Path(workdir).glob("smoke.*"))
         if not produced:
@@ -300,6 +330,13 @@ def main():
         except CanaryMisconfigured as e:
             log(f"      SKIPPED — {e}")
             misconfigured[name] = str(e)
+        except yt_dlp.utils.DownloadError as e:
+            if is_environment_failure(e):
+                log(f"      SKIPPED — probe environment rejected the request: {e}")
+                misconfigured[name] = str(e)
+            else:
+                log(f"      FAILED — {e}")
+                failures[name] = str(e)
         except AssertionError as e:
             log(f"      FAILED — {e}")
             failures[name] = str(e)

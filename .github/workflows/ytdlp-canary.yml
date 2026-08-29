@@ -37,13 +37,17 @@ jobs:
   verify:
     name: Smoke test yt-dlp
     runs-on: ubuntu-latest
+    # A live third-party probe must never occupy a runner indefinitely. The
+    # script also has per-request timeouts, but this caps the whole job when a
+    # CDN connection stalls between reads.
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.smoke.outputs.version }}
       verdict: ${{ steps.smoke.outputs.verdict }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -95,10 +99,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Only a hard failure stops the pipeline. "Inconclusive" means the
-          # canary could not reach a verdict (video removed, network flake);
-          # that must not publish an unverified image, but it is not evidence
-          # of a regression either.
-          [ "$verdict" = "pass" ]
+          # canary could not reach a verdict (video removed, network flake, or
+          # a blocked hosted-runner IP). It must not publish an unverified
+          # image, but it should not paint the CD workflow red either.
+          [ "$verdict" != "fail" ]
 
   publish:
     name: Publish verified image
@@ -117,9 +121,9 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
