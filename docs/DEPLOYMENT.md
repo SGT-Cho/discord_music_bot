@@ -22,27 +22,32 @@ push / PR -> GitHub CI -> lint + offline tests + multi-arch build
   -> resolve exact yt-dlp PEP 440 version
   -> build an isolated native candidate
   -> extraction + short media read + FFmpeg decode + full download
-  -> pass: push deploy-ytdlp-v<version>--<full-commit> over SSH
+  -> pass: SSH-sign and push deploy-ytdlp-v<version>--<full-commit>
 
 authorization tag
   -> verify tag, commit ancestry, exact version, lint, and offline tests
-  -> publish multi-arch GHCR image with an immutable version + full-SHA tag
+  -> publish multi-arch GHCR image with a version + full-SHA tag
 
 00:00 / 06:00 / 12:00 / 18:00 local
   -> bin/update.sh chooses the newest authorization on main
-  -> pull its immutable image (never latest)
+  -> verify OCI revision/version labels and pin the pulled sha256 digest
   -> recreate -> wait for Discord ready + exact yt-dlp version
   -> pass: keep running; fail: recreate the previous image
 ```
 
 The convenience `latest`, `sha-<short>`, and `ytdlp-<version>` image tags are
-published for humans. Automated deployment uses only:
+published for humans. Automated deployment resolves the full authorization tag
+once, records its first observed digest, and runs Compose with
+`repository@sha256:...`. A later registry-tag mutation is rejected. The lookup
+tag is:
 
 ```text
 ghcr.io/sgt-cho/discord_music_bot:ytdlp-<PEP440-version>-sha-<full-40-char-commit>
 ```
 
-This prevents a slow, older workflow from moving a host backward.
+The GitHub workflow also requires the signed tag to point at the exact current
+`main` tip. Together these checks prevent a slow or replayed workflow from
+moving a host backward.
 
 ## Canary checks
 
@@ -76,8 +81,10 @@ the exact distribution pin is `2026.8.27.231323.dev0`, not
 
 ## One-time GitHub setup
 
-The host uses its repository-scoped SSH deploy key only to fetch code and
-create authorization tags. It is not a GHCR credential.
+The host uses its repository-scoped SSH deploy key only to fetch/push refs and a
+separate local Ed25519 key only to sign authorization tags. The signing public
+key is pinned in `config/release_allowed_signers`; neither private key is a GHCR
+credential.
 
 Before enabling the tag job, configure repository rules in GitHub's Settings:
 
@@ -147,10 +154,16 @@ Run a release probe or update immediately:
 ./bin/update.sh
 ```
 
-`./bin/update.sh --force` recreates the newest authorized image even when its
-image ID is unchanged. It keeps `music-bot-rollback:last-good` locally and
-automatically restores it if the new container does not reach Discord's
-`on_ready` event with the authorized yt-dlp version within the deadline.
+`./bin/update.sh --force` recreates the newest authorized digest even when its
+image ID is unchanged. Before activation it writes an atomic transaction record
+and keeps a unique local rollback tag. A successful candidate must remain
+healthy for a stability window with the exact yt-dlp version and no restart.
+Failure restores the prior image and quarantines the rejected digest; an
+interrupted transaction is recovered on the next run.
+
+Updater state lives in `~/Library/Caches/musicbot/`. To deliberately retry a
+previously rejected digest after investigating it, remove only its exact line
+from `rejected-digests.txt`; do not delete or move the signed Git tag.
 
 The image build arguments remain available for local development:
 

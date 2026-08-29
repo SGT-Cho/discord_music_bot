@@ -87,8 +87,8 @@ values yourself (see [Configuration](#configuration)). `python setup.py
 
 ## Docker
 
-The included Compose setup runs the bot as a non-root user with a daily
-self-updating `yt-dlp`:
+The included Compose setup runs the bot as a non-root user with signed,
+deployment-WAN-verified `yt-dlp` image updates:
 
 ```bash
 cp .env.example .env   # then fill in your Discord bot token
@@ -102,7 +102,8 @@ docker compose up -d
   [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - The container runs as UID/GID `1001` by default; override with the
   `APP_UID` / `APP_GID` build args to match your host user.
-- A healthcheck restarts the container if TCP connections pile up.
+- The healthcheck becomes healthy only after Discord's `on_ready`; the updater
+  requires that state and the exact authorized yt-dlp version or rolls back.
 
 ## Configuration
 

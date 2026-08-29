@@ -14,7 +14,7 @@
   Check on it:
 
     launchctl list | grep musicbot
-    tail -f /tmp/musicbot-update.log
+    tail -f ~/Library/Logs/musicbot-update.log
 
   Remove:
 
@@ -27,6 +27,8 @@
 
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
         <string>/bin/bash</string>
         <!-- Absolute path to your checkout; launchd does not expand ~ or $HOME. -->
         <string>/Users/winter/Documents/discord-bot/music-bot/bin/update.sh</string>
