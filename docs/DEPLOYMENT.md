@@ -107,8 +107,22 @@ force-update the tag.
 
 ## macOS host installation
 
-The checked-in plists contain the actual checkout path and Colima Docker
-context for this headless host. They explicitly target the per-user
+macOS privacy controls prevent a headless LaunchAgent from executing scripts
+inside `Documents`. Keep the developer checkout there, but use a private
+deployment checkout under `Application Support`. The plist keeps the existing
+2.1 GB audio cache through `MUSIC_LIBRARY_PATH` rather than copying it.
+
+```bash
+git clone git@github.com:SGT-Cho/discord_music_bot.git \
+  ~/Library/"Application Support"/musicbot/repository
+git -C ~/Library/"Application Support"/musicbot/repository config \
+  core.sshCommand "ssh -i /Users/winter/.ssh/sgt_cho_discord_music_bot_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes"
+install -m 600 .env \
+  ~/Library/"Application Support"/musicbot/repository/.env
+```
+
+The checked-in plists contain the actual deployment checkout path and Colima
+Docker context for this headless host. They explicitly target the per-user
 `Background` session because an SSH-managed Mac has no `gui/<uid>` launchd
 domain. Install both jobs with modern launchd commands:
 

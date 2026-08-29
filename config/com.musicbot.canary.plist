@@ -20,7 +20,7 @@
         <string>/usr/bin/caffeinate</string>
         <string>-i</string>
         <string>/bin/bash</string>
-        <string>/Users/winter/Documents/discord-bot/music-bot/bin/release-ytdlp.sh</string>
+        <string>/Users/winter/Library/Application Support/musicbot/repository/bin/release-ytdlp.sh</string>
         <string>nightly</string>
     </array>
 
