@@ -1,245 +1,182 @@
 # Deployment
 
-## Why it works this way
+## Trust boundary
 
-The bot's hardest dependency is not a library version, it is YouTube. Extraction
-breaks when YouTube changes something, on YouTube's schedule, with no relation
-to anything in this repository. A build that passed last week can fail today
-without a single line changing.
+YouTube frequently rejects GitHub-hosted Azure IPs even when yt-dlp works on
+the bot's real network. For that reason, GitHub's scheduled canary is an
+observational signal only. It can report a hosted-runner regression, but it
+cannot publish an image.
 
-That shapes the whole pipeline:
+The release gate runs in an isolated container on the deployment Mac and uses
+the same WAN as the bot. It receives no `.env`, Discord token, browser cookies,
+SSH key, host directories, or Docker socket. Only exit code `0` authorizes a
+release; hard failures and inconclusive probes both leave the running bot
+untouched.
 
-- **CI** answers "did this change break the code?" — it never touches the
-  network, so a red build means a real regression.
-- **The yt-dlp canary** answers "does the current yt-dlp still work against real
-  YouTube?" — it runs on a schedule rather than on commits, because that is when
-  the answer changes.
-- **Deployment is pull-based.** The bot runs on a laptop that GitHub cannot
-  reach, so CI publishes an image and the machine fetches it.
+```text
+push / PR -> GitHub CI -> lint + offline tests + multi-arch build
 
-Only a verified image is ever published, so the running bot moves from one
-known-good extractor to the next instead of gambling on whatever was newest.
+04:00 / 16:00 local
+  -> bin/release-ytdlp.sh
+  -> archive the fetched origin/main commit
+  -> resolve exact yt-dlp PEP 440 version
+  -> build an isolated native candidate
+  -> extraction + short media read + FFmpeg decode + full download
+  -> pass: push deploy-ytdlp-v<version>--<full-commit> over SSH
 
-## The pipeline
+authorization tag
+  -> verify tag, commit ancestry, exact version, lint, and offline tests
+  -> publish multi-arch GHCR image with an immutable version + full-SHA tag
 
-```
-push / PR ──► CI ──► lint · compile · 30 offline tests · multi-arch build
-                     (no network: failures mean the code broke)
-
-schedule ──► canary ──► install newest yt-dlp
-              │         run tools/ytdlp_smoke.py against real YouTube
-              │
-              ├─ pass ────► publish ──► ghcr.io/…:latest
-              │                          ghcr.io/…:ytdlp-<version>
-              │                          ghcr.io/…:sha-<commit>
-              │
-              ├─ fail ────► publish nothing, report
-              │             (the running bot keeps the version it has)
-              │
-              └─ inconclusive ─► publish nothing, report
-                                 (canary needs attention — not a verdict)
-
-every 6h ──► bin/update.sh on the host ──► docker compose pull && up -d
+00:00 / 06:00 / 12:00 / 18:00 local
+  -> bin/update.sh chooses the newest authorization on main
+  -> pull its immutable image (never latest)
+  -> recreate -> wait for Discord ready + exact yt-dlp version
+  -> pass: keep running; fail: recreate the previous image
 ```
 
-The three canary outcomes are deliberately distinct. A removed test video and a
-genuine yt-dlp regression both stop a deployment, but only one of them means
-anything is wrong with yt-dlp, and treating them the same trains you to ignore
-the alert.
+The convenience `latest`, `sha-<short>`, and `ytdlp-<version>` image tags are
+published for humans. Automated deployment uses only:
 
-## What the canary actually checks
+```text
+ghcr.io/sgt-cho/discord_music_bot:ytdlp-<PEP440-version>-sha-<full-40-char-commit>
+```
 
-`tools/ytdlp_smoke.py` exercises the two paths the bot uses, because they fail
-independently:
+This prevents a slow, older workflow from moving a host backward.
 
-| Check | Mirrors | Catches |
-| --- | --- | --- |
-| `extraction` | metadata lookup | extractor breakage |
-| `stream_read` | FFmpeg reading a stream URL during playback | session caps, 403s on the media URL |
-| `ffmpeg_decode` | `FFmpegOptimizer` header passing | header/UA mismatches that 403 the CDN |
-| `full_download` | `AudioCacheManager` | download + transcode regressions |
+## Canary checks
 
-`stream_read` deliberately reads past 20 MB. YouTube has cut media sessions
-around that boundary, and FFmpeg cannot re-issue an expired URL — the symptom is
-a long track stopping partway with nothing in the logs the listener can act on.
+`tools/ytdlp_smoke.py` performs four release-gating checks:
 
-Run it by hand any time playback breaks and you need to know whether the cause
-is upstream:
+| Check | What it proves |
+| --- | --- |
+| `extraction` | A stable public video resolves to playable audio metadata. |
+| `stream_read` | The signed media URL accepts yt-dlp's real headers. |
+| `ffmpeg_decode` | FFmpeg can open and decode that URL. |
+| `full_download` | yt-dlp and FFmpeg can download and transcode a complete track. |
+
+The short stream read is intentionally bounded. On the deployment WAN, a 21 MB
+sequential read takes roughly 11–14 minutes even when healthy. That historical
+session-cap check remains available as a non-gating long diagnostic:
 
 ```bash
+SMOKE_LONG_SESSION_CHECK=1 \
+SMOKE_TOTAL_DEADLINE_SECONDS=1500 \
 python tools/ytdlp_smoke.py
 ```
 
-Exit codes: `0` pass, `1` yt-dlp regressed, `2` the canary itself needs fixing.
+Exit codes are `0` for pass, `1` for a functional yt-dlp failure, and `2` for
+an inconclusive environment/canary failure. The launchd gate publishes only on
+`0`.
 
-## Host setup
+Nightly CLI output omits the `.dev0` suffix required by pip. Release metadata
+therefore always comes from `importlib.metadata.version("yt-dlp")`; for example,
+the exact distribution pin is `2026.8.27.231323.dev0`, not
+`2026.08.27.231323`.
 
-One-time, on the machine that runs the bot:
+## One-time GitHub setup
+
+The host uses its repository-scoped SSH deploy key only to fetch code and
+create authorization tags. It is not a GHCR credential.
+
+Before enabling the tag job, configure repository rules in GitHub's Settings:
+
+1. Protect `main` from direct updates and require changes through the normal
+   reviewed/status-checked path. Do not give the write deploy key a `main`
+   bypass.
+2. Add a tag ruleset for `deploy-ytdlp-v*` that blocks tag updates, deletion,
+   and force changes. Authorization tags are append-only; never move one.
+
+The first successful publish creates the GHCR package as private. This
+code-only public repository uses no private payload, so set the package
+visibility to **Public** once under **Packages -> Package settings -> Change
+visibility**. The host can then pull anonymously without storing a broad PAT.
+
+If a tag was authorized but the publish workflow failed, use **Actions ->
+Publish verified image -> Re-run failed jobs**. Do not delete, recreate, or
+force-update the tag.
+
+## macOS host installation
+
+The checked-in plists contain the actual checkout path and Colima Docker
+context for this host. Install both jobs with modern launchd commands:
 
 ```bash
-cp .env.example .env    # fill in DISCORD_TOKEN
-docker compose up -d
-```
-
-Then install the update timer:
-
-```bash
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs ~/Library/Caches/musicbot
+chmod 700 ~/Library/Caches/musicbot
+cp config/com.musicbot.canary.plist ~/Library/LaunchAgents/
 cp config/com.musicbot.update.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.musicbot.update.plist
+
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.canary.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.update.plist
 ```
 
-The plist has an absolute path to `bin/update.sh` baked in, because launchd
-expands neither `~` nor `$HOME`. If your checkout lives somewhere other than
-`/Users/winter/Documents/discord-bot/music-bot`, edit that path first. Check on
-it with `launchctl list | grep musicbot` and `tail -f /tmp/musicbot-update.log`.
-
-launchd rather than cron because this runs on a laptop — if the machine is
-asleep at the scheduled time, launchd runs the job once on wake instead of
-skipping the window.
-
-On a Linux host, a `cron` entry does the same job:
-
-```
-0 */6 * * * /path/to/music-bot/bin/update.sh >> /var/log/musicbot-update.log 2>&1
-```
-
-### Why not Watchtower
-
-Watchtower is the usual answer for pull-based updates, and it needs
-`/var/run/docker.sock` mounted into a third-party container — which grants that
-container full control of Docker, and through it the host. `bin/update.sh` does
-the same job in about thirty lines you can read in full, running as your own
-user, with nothing extra listening.
-
-## Updating by hand
+Run either once without waiting for its calendar:
 
 ```bash
+launchctl kickstart -k gui/$(id -u)/com.musicbot.canary
+launchctl kickstart -k gui/$(id -u)/com.musicbot.update
+```
+
+Inspect status and logs:
+
+```bash
+launchctl print gui/$(id -u)/com.musicbot.canary
+launchctl print gui/$(id -u)/com.musicbot.update
+tail -f ~/Library/Logs/musicbot-canary.log
+tail -f ~/Library/Logs/musicbot-update.log
+```
+
+To uninstall:
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.canary.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.update.plist
+```
+
+The canary runs under `caffeinate`, so an idle sleep does not interrupt a
+candidate build or probe. Both scripts use kernel-backed `lockf` locks to make
+manual and scheduled invocations mutually exclusive.
+
+## Manual operations
+
+Run a release probe or update immediately:
+
+```bash
+./bin/release-ytdlp.sh nightly
 ./bin/update.sh
 ```
 
-Safe to run any time; without a new image it does nothing. Add `--force` to
-restart even when the image has not changed.
+`./bin/update.sh --force` recreates the newest authorized image even when its
+image ID is unchanged. It keeps `music-bot-rollback:last-good` locally and
+automatically restores it if the new container does not reach Discord's
+`on_ready` event with the authorized yt-dlp version within the deadline.
 
-## Rolling back
+The image build arguments remain available for local development:
 
-Every published image keeps a `ytdlp-<version>` tag, so a rollback is a tag
-change rather than a rebuild:
-
-```bash
-# in .env
-BOT_IMAGE="ghcr.io/sgt-cho/discord_music_bot:ytdlp-2026.08.18.122307"
-```
-
-```bash
-docker compose up -d
-```
-
-To go back to tracking the newest verified build, remove `BOT_IMAGE` and run
-`./bin/update.sh`.
-
-## Choosing a yt-dlp version locally
-
-The image takes two build args:
-
-| Arg | Effect |
+| Argument | Effect |
 | --- | --- |
-| `YT_DLP_VERSION` | Exact pin, stable or nightly. Wins over the channel. |
-| `YT_DLP_CHANNEL` | `nightly` for the newest pre-release, `stable` (default) otherwise. |
+| `YT_DLP_VERSION` | Exact stable/nightly PEP 440 pin; wins over channel. |
+| `YT_DLP_CHANNEL` | `nightly` or `stable` floating development build. |
 
 ```bash
-YT_DLP_VERSION=2026.08.18.122307 \
+YT_DLP_VERSION=2026.8.27.231323.dev0 \
   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
-Nightly is not a taste for the bleeding edge. YouTube breaks extraction faster
-than the stable channel ships fixes, so a stable release that cannot fetch audio
-is worth less than a nightly that can. The canary is what makes this safe: a
-nightly only reaches the bot after passing against real YouTube.
+For a fork, set `BOT_IMAGE_REPOSITORY=ghcr.io/<owner>/<repo>` in the host
+environment and give the checkout a repository-scoped SSH deploy key for that
+fork. A floating channel build can reuse a Docker cache layer; use
+`docker compose build --no-cache` when intentionally refreshing it. Release
+builds use an exact version and do not have that ambiguity.
 
-## Running your own fork
+## Security notes
 
-This repository exists to be taken and run as someone else's bot, so a few
-things about the pipeline are worth knowing before you fork it.
-
-**The default image is not your code.** `docker-compose.yml` pulls the upstream
-image so a fresh clone runs with no registry setup at all. That is the right
-default for running the bot as-is, and the wrong one the moment you change
-something. Two ways out:
-
-```bash
-# build your working tree locally
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
-```
-
-```bash
-# or point at your own published package, in .env
-BOT_IMAGE="ghcr.io/<your-user>/<your-repo>:latest"
-```
-
-**Publishing adapts to your fork automatically.** The publish workflow derives
-its image name from the repository it runs in, so it pushes to your namespace,
-not this one. Nothing to edit.
-
-**Actions are off in a new fork.** GitHub disables workflows in forks until you
-enable them on the Actions tab, and scheduled workflows stay off until then —
-so the canary will not run on its own until you turn it on. GitHub also pauses
-schedules in repositories with no activity for 60 days.
-
-**Secrets do not come with the fork.** You get the workflows, not the values,
-which is also why a fork's pull request cannot read the upstream repository's
-secrets. Notifications are opt-in and absent by default: with nothing
-configured, the notify step prints a note and succeeds, and verdicts still land
-in the workflow run summary.
-
-## Optional: notifications
-
-Two mechanisms, because they run in different places — GitHub Actions has no
-access to the bot's Discord connection, and the bot has no idea CI exists:
-
-| Where | Setting | Covers |
-| --- | --- | --- |
-| From the bot | `OPS_CHANNEL_ID` in `.env` | cache download failures, playback recovery errors |
-| From CI | repository secrets, below | canary verdicts, publish outcomes |
-
-Both are optional. Without them the information stays in the logs and in the
-workflow run summary.
-
-### Choosing how CI reaches you
-
-`tools/notify_discord.py` takes the first route that is configured:
-
-| Route | Secrets | Notes |
-| --- | --- | --- |
-| Webhook → channel | `OPS_DISCORD_WEBHOOK` | Preferred. A leaked webhook can only post to that one channel. |
-| Bot → channel | `OPS_DISCORD_BOT_TOKEN` + `OPS_DISCORD_CHANNEL_ID` | |
-| Bot → DM | `OPS_DISCORD_BOT_TOKEN` + `OPS_DISCORD_USER_ID` | The only way to get a DM: Discord has no webhook that can DM. |
-
-Create a webhook in **Server Settings → Integrations → Webhooks**; the URL is
-the whole configuration.
-
-For a DM you need `OPS_DISCORD_USER_ID`, your own numeric Discord user ID —
-enable **Settings → Advanced → Developer Mode**, then right-click your name and
-*Copy User ID*. The bot must share a server with you for the DM to go through.
-
-Weigh the DM route before taking it. A webhook URL that leaks lets someone post
-in one channel; a bot token that leaks lets someone act as that bot in every
-server it has joined. If you want DMs, a second bot that exists only to deliver
-these notifications is a better trade than handing CI the token the music bot
-runs on.
-
-## Repository secrets
-
-| Secret | Required | Purpose |
-| --- | --- | --- |
-| `GITHUB_TOKEN` | automatic | pushes images to GHCR |
-| `OPS_DISCORD_WEBHOOK` | no | canary and publish notifications, to a channel |
-| `OPS_DISCORD_BOT_TOKEN` | no | alternative to the webhook; needed for DMs |
-| `OPS_DISCORD_CHANNEL_ID` | no | with the bot token, posts to this channel |
-| `OPS_DISCORD_USER_ID` | no | with the bot token, sends a DM to this user |
-
-Set them with `gh secret set OPS_DISCORD_WEBHOOK`, or under **Settings →
-Secrets and variables → Actions**.
-
-No deployment credentials are stored in GitHub. Because the flow is pull-based,
-CI never needs access to the machine running the bot — which also means a
-compromised workflow cannot reach it directly.
+- Never add Google cookies, browser sessions, PO tokens, proxies, or bypass
+  providers to this public repository.
+- Neither candidate containers nor the bot receive the SSH deploy key or
+  Docker socket.
+- No deployment credential is stored in GitHub; publication uses the scoped
+  workflow `GITHUB_TOKEN`, and deployment pulls a public code image.
+- Watchtower is intentionally absent. `bin/update.sh` is the complete,
+  auditable Docker-socket consumer and preserves a bounded rollback path.
