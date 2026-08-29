@@ -1,13 +1,15 @@
 #!/bin/bash
 # Build and smoke-test an exact yt-dlp release on the deployment WAN. A pass
-# authorizes GitHub to publish it by creating one immutable lightweight tag.
+# authorizes GitHub to publish it by creating one signed, append-only tag.
 set -euo pipefail
 umask 077
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHANNEL="${1:-nightly}"
 LOCK_DIR="${HOME:?HOME must be set}/Library/Caches/musicbot"
-LOCK_FILE="$LOCK_DIR/release-ytdlp.lock"
+LOCK_FILE="$LOCK_DIR/pipeline.lock"
+SIGNING_KEY="${MUSICBOT_RELEASE_SIGNING_KEY:-/Users/winter/.ssh/sgt_cho_musicbot_release_signing_ed25519}"
+ALLOWED_SIGNERS="$PROJECT_DIR/config/release_allowed_signers"
 TEMP_ROOT="${TMPDIR:-/tmp}"
 TEMP_ROOT="${TEMP_ROOT%/}"
 TEMP_DIR=""
@@ -15,6 +17,22 @@ CANDIDATE_IMAGE=""
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+verify_remote_tag() {
+    remote_lines="$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}")"
+    remote_object="$(printf '%s\n' "$remote_lines" | awk -v ref="refs/tags/$TAG" '$2 == ref {print $1; exit}')"
+    remote_commit="$(printf '%s\n' "$remote_lines" | awk -v ref="refs/tags/$TAG^{}" '$2 == ref {print $1; exit}')"
+
+    [ -n "$remote_object" ] || return 1
+    [ "$remote_commit" = "$SOURCE_SHA" ] || return 1
+
+    check_ref="refs/musicbot-release-check/$TAG"
+    git fetch --no-tags origin "+refs/tags/$TAG:$check_ref" >/dev/null
+    [ "$(git cat-file -t "$check_ref")" = "tag" ] || return 1
+    git -c gpg.format=ssh \
+        -c gpg.ssh.allowedSignersFile="$ALLOWED_SIGNERS" \
+        verify-tag "$check_ref" >/dev/null 2>&1
 }
 
 cleanup() {
@@ -68,6 +86,11 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
+if [ ! -r "$SIGNING_KEY" ] || [ ! -r "$ALLOWED_SIGNERS" ]; then
+    log "Release signing key or allowed-signers file is unavailable."
+    exit 1
+fi
+
 cd "$PROJECT_DIR"
 log "Fetching origin/main over the repository's SSH deploy key..."
 git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
@@ -98,14 +121,14 @@ VERSION="$(docker run --rm \
 VERSION="$(python3 "$PROJECT_DIR/tools/ytdlp_release.py" validate-version "$VERSION")"
 TAG="$(python3 "$PROJECT_DIR/tools/ytdlp_release.py" tag "$VERSION" "$SOURCE_SHA")"
 
-REMOTE_TAG_SHA="$(git ls-remote --tags origin "refs/tags/$TAG" | awk 'NR == 1 {print $1}')"
-if [ -n "$REMOTE_TAG_SHA" ]; then
-    if [ "$REMOTE_TAG_SHA" = "$SOURCE_SHA" ]; then
+REMOTE_TAG_OBJECT="$(git ls-remote --tags origin "refs/tags/$TAG" | awk 'NR == 1 {print $1}')"
+if [ -n "$REMOTE_TAG_OBJECT" ]; then
+    if verify_remote_tag; then
         log "$TAG already authorizes this source; nothing to do."
         log "If its publish run failed, use GitHub Actions 'Re-run failed jobs'; never move the tag."
         exit 0
     fi
-    log "Refusing conflicting remote tag $TAG ($REMOTE_TAG_SHA)."
+    log "Refusing conflicting, unsigned, or incorrectly targeted remote tag $TAG."
     exit 1
 fi
 
@@ -145,9 +168,27 @@ if [ "$CURRENT_MAIN" != "$SOURCE_SHA" ]; then
 fi
 
 log "Probe passed; authorizing publication with $TAG..."
-if ! git push origin "$SOURCE_SHA:refs/tags/$TAG"; then
-    REMOTE_TAG_SHA="$(git ls-remote --tags origin "refs/tags/$TAG" | awk 'NR == 1 {print $1}')"
-    if [ "$REMOTE_TAG_SHA" = "$SOURCE_SHA" ]; then
+if git show-ref --verify --quiet "refs/tags/$TAG"; then
+    [ "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$SOURCE_SHA" ]
+    git -c gpg.format=ssh \
+        -c gpg.ssh.allowedSignersFile="$ALLOWED_SIGNERS" \
+        verify-tag "$TAG" >/dev/null
+else
+    git -c gpg.format=ssh \
+        -c user.signingkey="$SIGNING_KEY" \
+        -c user.name=musicbot-release \
+        -c user.email=musicbot-release@localhost \
+        tag -s "$TAG" "$SOURCE_SHA" \
+        -m "Authorize yt-dlp $VERSION after deployment-WAN canary"
+fi
+
+# Including main as a no-op refspec makes the tag creation atomic with the
+# observed main tip. If main advances after the final fetch, the non-fast-
+# forward main refspec rejects the whole push instead of authorizing stale code.
+if ! git push --atomic origin \
+    "$SOURCE_SHA:refs/heads/main" \
+    "refs/tags/$TAG:refs/tags/$TAG"; then
+    if verify_remote_tag; then
         log "A concurrent run created the same authorization tag."
         exit 0
     fi

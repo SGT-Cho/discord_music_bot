@@ -6,6 +6,7 @@ from tools.ytdlp_release import (
     ReleaseMetadataError,
     build_release_tag,
     validate_version,
+    version_sort_key,
     verify_release_tag,
 )
 
@@ -38,6 +39,10 @@ def test_round_trip_release_tag():
     tag = build_release_tag("2026.8.27.231323.dev0", COMMIT)
     assert tag == f"deploy-ytdlp-v2026.8.27.231323.dev0--{COMMIT}"
     assert verify_release_tag(tag, COMMIT) == "2026.8.27.231323.dev0"
+
+
+def test_version_sort_key_uses_numeric_date_order():
+    assert version_sort_key("2026.10.1") > version_sort_key("2026.9.30.235959.dev0")
 
 
 def test_tag_must_match_the_full_checkout_commit():

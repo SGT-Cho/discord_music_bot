@@ -1,7 +1,7 @@
 name: Publish verified image
 
 # A deployment-WAN canary authorizes exactly one source commit and one exact
-# PEP 440 yt-dlp distribution version by pushing a lightweight tag. There is
+# PEP 440 yt-dlp distribution version by pushing an SSH-signed tag. There is
 # intentionally no workflow_dispatch or workflow_call bypass.
 on:
   push:
@@ -19,9 +19,11 @@ jobs:
   metadata:
     name: Verify release authorization
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.verify.outputs.version }}
       short_sha: ${{ steps.verify.outputs.short_sha }}
+      commit: ${{ steps.verify.outputs.commit }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -34,23 +36,29 @@ jobs:
           DEPLOY_TAG: ${{ github.ref_name }}
         run: |
           test "$GITHUB_REF_TYPE" = "tag"
-          test "$(git cat-file -t "refs/tags/$DEPLOY_TAG")" = "commit"
-          checkout_sha="$(git rev-parse HEAD)"
-          test "$checkout_sha" = "$GITHUB_SHA"
+          test "$(git cat-file -t "refs/tags/$DEPLOY_TAG")" = "tag"
+          git -c gpg.format=ssh \
+            -c gpg.ssh.allowedSignersFile="$GITHUB_WORKSPACE/config/release_allowed_signers" \
+            verify-tag "$DEPLOY_TAG"
+
+          checkout_sha="$(git rev-parse "$DEPLOY_TAG^{commit}")"
+          test "$(git rev-parse HEAD)" = "$checkout_sha"
           version="$(python tools/ytdlp_release.py verify-tag "$DEPLOY_TAG" "$checkout_sha")"
 
-          # A valid-looking tag on an unrelated commit is not a release.
+          # A replayed or stale authorization must not move publication tags.
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$checkout_sha" refs/remotes/origin/main
+          test "$checkout_sha" = "$(git rev-parse refs/remotes/origin/main)"
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "short_sha=${checkout_sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "commit=$checkout_sha" >> "$GITHUB_OUTPUT"
           echo "Authorized yt-dlp $version at $checkout_sha"
 
   test:
     name: Re-test authorized source
     needs: metadata
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
@@ -79,11 +87,13 @@ jobs:
           pytest -m "not network" -v
           bash -n bin/*.sh
           python -c 'import glob, plistlib; [plistlib.load(open(path, "rb")) for path in glob.glob("config/*.plist")]'
+          docker compose config --quiet
 
   publish:
     name: Build and push
     needs: [metadata, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -108,12 +118,13 @@ jobs:
         env:
           YTDLP_VERSION: ${{ needs.metadata.outputs.version }}
           SHORT_SHA: ${{ needs.metadata.outputs.short_sha }}
+          FULL_SHA: ${{ needs.metadata.outputs.commit }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           tags="${image}:latest"
           tags="${tags},${image}:sha-${SHORT_SHA}"
           tags="${tags},${image}:ytdlp-${YTDLP_VERSION}"
-          tags="${tags},${image}:ytdlp-${YTDLP_VERSION}-sha-${GITHUB_SHA}"
+          tags="${tags},${image}:ytdlp-${YTDLP_VERSION}-sha-${FULL_SHA}"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
           echo "Publishing: $tags"
 
@@ -127,7 +138,7 @@ jobs:
           build-args: |
             YT_DLP_VERSION=${{ needs.metadata.outputs.version }}
           labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ needs.metadata.outputs.commit }}
             org.opencontainers.image.version=${{ needs.metadata.outputs.version }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha

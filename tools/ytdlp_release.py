@@ -44,6 +44,20 @@ def validate_version(version: str) -> str:
     return version
 
 
+def version_sort_key(version: str) -> str:
+    """Return a fixed-width chronological key for release-tag selection."""
+    validate_version(version)
+    match = VERSION_RE.fullmatch(version)
+    return "".join(
+        (
+            match.group("year"),
+            f"{int(match.group('month')):02d}",
+            f"{int(match.group('day')):02d}",
+            match.group("time") or "000000",
+        )
+    )
+
+
 def validate_commit(commit: str) -> str:
     """Return a full lowercase Git object ID, rejecting abbreviations."""
     if not COMMIT_RE.fullmatch(commit):
@@ -79,6 +93,9 @@ def parse_args(argv=None):
     validate = commands.add_parser("validate-version")
     validate.add_argument("version")
 
+    sort_key = commands.add_parser("sort-key")
+    sort_key.add_argument("version")
+
     tag = commands.add_parser("tag")
     tag.add_argument("version")
     tag.add_argument("commit")
@@ -94,6 +111,8 @@ def main(argv=None):
     try:
         if args.command == "validate-version":
             print(validate_version(args.version))
+        elif args.command == "sort-key":
+            print(version_sort_key(args.version))
         elif args.command == "tag":
             print(build_release_tag(args.version, args.commit))
         else:
