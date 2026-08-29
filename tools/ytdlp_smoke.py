@@ -28,6 +28,7 @@ Exit codes are distinct on purpose:
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -66,7 +67,8 @@ LARGE_VIDEO_SEARCH = os.getenv("SMOKE_LARGE_SEARCH", "full concert live")
 # Read this far into the stream; anything past ~21 MB clears the boundary.
 STREAM_READ_LIMIT = 25 * 1024 * 1024
 STREAM_READ_TARGET = 21 * 1024 * 1024
-STREAM_READ_DEADLINE_SECONDS = int(os.getenv("SMOKE_STREAM_DEADLINE_SECONDS", "180"))
+STREAM_READ_DEADLINE_SECONDS = int(os.getenv("SMOKE_STREAM_DEADLINE_SECONDS", "600"))
+TOTAL_DEADLINE_SECONDS = int(os.getenv("SMOKE_TOTAL_DEADLINE_SECONDS", "840"))
 
 # GitHub-hosted runner addresses are shared and can be rate-limited or blocked
 # independently of the yt-dlp release under test. Those messages describe an
@@ -86,6 +88,18 @@ ENVIRONMENT_FAILURE_MARKERS = (
     "timed out",
 )
 
+# A stale candidate should not wedge the canary, but only errors that clearly
+# describe that one video may fall through to the next candidate. Parser,
+# format, and extractor errors remain hard failures.
+CANDIDATE_UNAVAILABLE_MARKERS = (
+    "video unavailable",
+    "this video is unavailable",
+    "private video",
+    "has been removed",
+    "is no longer available",
+    "members-only content",
+)
+
 BASE_OPTS = {
     "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
     "quiet": True,
@@ -101,10 +115,20 @@ class CanaryMisconfigured(Exception):
     """The check could not run — not evidence that yt-dlp is broken."""
 
 
+class CanaryDeadlineExceeded(CanaryMisconfigured):
+    """The whole probe exceeded its bounded execution time."""
+
+
 def is_environment_failure(error):
     """Return whether an error points to the probe environment, not yt-dlp."""
     message = str(error).casefold()
     return any(marker.casefold() in message for marker in ENVIRONMENT_FAILURE_MARKERS)
+
+
+def is_candidate_unavailable(error):
+    """Return whether an error only invalidates one configured test video."""
+    message = str(error).casefold()
+    return any(marker.casefold() in message for marker in CANDIDATE_UNAVAILABLE_MARKERS)
 
 
 def log(message):
@@ -152,8 +176,17 @@ def find_large_video():
         try:
             info = extract(video_id)
         except yt_dlp.utils.DownloadError as e:
-            log(f"      candidate {video_id} unavailable ({str(e).strip()[:80]}); trying next")
-            continue
+            if is_environment_failure(e):
+                raise CanaryMisconfigured(
+                    f"probe environment rejected candidate {video_id}: {e}"
+                ) from e
+            if is_candidate_unavailable(e):
+                log(
+                    f"      candidate {video_id} unavailable "
+                    f"({str(e).strip()[:80]}); trying next"
+                )
+                continue
+            raise
         if not info or not info.get("url"):
             continue
         if (info.get("duration") or 0) < MIN_LARGE_DURATION_SECONDS:
@@ -165,15 +198,25 @@ def find_large_video():
     try:
         results = extract_search(LARGE_VIDEO_SEARCH, limit=8)
     except yt_dlp.utils.DownloadError as e:
-        raise CanaryMisconfigured(f"candidates gone and search failed: {e}") from e
+        if is_environment_failure(e):
+            raise CanaryMisconfigured(
+                f"candidates gone and the probe environment rejected search: {e}"
+            ) from e
+        raise
 
     for entry in results:
         if (entry.get("duration") or 0) < MIN_LARGE_DURATION_SECONDS:
             continue
         try:
             info = extract(entry["id"])
-        except yt_dlp.utils.DownloadError:
-            continue
+        except yt_dlp.utils.DownloadError as e:
+            if is_environment_failure(e):
+                raise CanaryMisconfigured(
+                    f"probe environment rejected search candidate {entry['id']}: {e}"
+                ) from e
+            if is_candidate_unavailable(e):
+                continue
+            raise
         if info and info.get("url"):
             log(
                 f"      using {entry['id']} from search — consider adding it to "
@@ -211,13 +254,17 @@ def check_stream_read():
     started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
+            # HTTPResponse.read(n) may wait to fill all n bytes while a CDN
+            # trickles data, preventing the wall-clock deadline from being
+            # checked. read1() performs at most one buffered/socket read.
+            read_chunk = getattr(response, "read1", response.read)
             while read < STREAM_READ_LIMIT:
                 if time.monotonic() - started >= STREAM_READ_DEADLINE_SECONDS:
                     raise CanaryMisconfigured(
                         "stream read exceeded "
                         f"{STREAM_READ_DEADLINE_SECONDS}s; runner/CDN path is too slow"
                     )
-                chunk = response.read(256 * 1024)
+                chunk = read_chunk(256 * 1024)
                 if not chunk:
                     break
                 read += len(chunk)
@@ -316,6 +363,12 @@ CHECKS = (
 )
 
 
+def _deadline_handler(_signum, _frame):
+    raise CanaryDeadlineExceeded(
+        f"whole canary exceeded {TOTAL_DEADLINE_SECONDS}s"
+    )
+
+
 def main():
     version = yt_dlp.version.__version__
     log(f"yt-dlp {version}")
@@ -324,25 +377,42 @@ def main():
     failures = {}
     misconfigured = {}
 
-    for name, check in CHECKS:
-        try:
-            check()
-        except CanaryMisconfigured as e:
-            log(f"      SKIPPED — {e}")
-            misconfigured[name] = str(e)
-        except yt_dlp.utils.DownloadError as e:
-            if is_environment_failure(e):
-                log(f"      SKIPPED — probe environment rejected the request: {e}")
+    deadline_supported = hasattr(signal, "SIGALRM") and TOTAL_DEADLINE_SECONDS > 0
+    if deadline_supported:
+        signal.signal(signal.SIGALRM, _deadline_handler)
+        signal.alarm(TOTAL_DEADLINE_SECONDS)
+
+    try:
+        for index, (name, check) in enumerate(CHECKS):
+            try:
+                check()
+            except CanaryDeadlineExceeded as e:
+                log(f"      SKIPPED — {e}")
                 misconfigured[name] = str(e)
-            else:
+                for remaining_name, _ in CHECKS[index + 1:]:
+                    misconfigured[remaining_name] = (
+                        "not run after whole-canary deadline"
+                    )
+                break
+            except CanaryMisconfigured as e:
+                log(f"      SKIPPED — {e}")
+                misconfigured[name] = str(e)
+            except yt_dlp.utils.DownloadError as e:
+                if is_environment_failure(e):
+                    log(f"      SKIPPED — probe environment rejected the request: {e}")
+                    misconfigured[name] = str(e)
+                else:
+                    log(f"      FAILED — {e}")
+                    failures[name] = str(e)
+            except AssertionError as e:
                 log(f"      FAILED — {e}")
                 failures[name] = str(e)
-        except AssertionError as e:
-            log(f"      FAILED — {e}")
-            failures[name] = str(e)
-        except Exception as e:  # unexpected: still a yt-dlp verdict
-            log(f"      FAILED — unexpected {type(e).__name__}: {e}")
-            failures[name] = f"{type(e).__name__}: {e}"
+            except Exception as e:  # unexpected: still a yt-dlp verdict
+                log(f"      FAILED — unexpected {type(e).__name__}: {e}")
+                failures[name] = f"{type(e).__name__}: {e}"
+    finally:
+        if deadline_supported:
+            signal.alarm(0)
 
     log("")
     summary = {
