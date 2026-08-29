@@ -108,7 +108,9 @@ force-update the tag.
 ## macOS host installation
 
 The checked-in plists contain the actual checkout path and Colima Docker
-context for this host. Install both jobs with modern launchd commands:
+context for this headless host. They explicitly target the per-user
+`Background` session because an SSH-managed Mac has no `gui/<uid>` launchd
+domain. Install both jobs with modern launchd commands:
 
 ```bash
 mkdir -p ~/Library/LaunchAgents ~/Library/Logs ~/Library/Caches/musicbot \
@@ -117,22 +119,22 @@ chmod 700 ~/Library/Caches/musicbot ~/Library/"Application Support"/musicbot
 cp config/com.musicbot.canary.plist ~/Library/LaunchAgents/
 cp config/com.musicbot.update.plist ~/Library/LaunchAgents/
 
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.canary.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.update.plist
+launchctl bootstrap user/$(id -u) ~/Library/LaunchAgents/com.musicbot.canary.plist
+launchctl bootstrap user/$(id -u) ~/Library/LaunchAgents/com.musicbot.update.plist
 ```
 
 Run either once without waiting for its calendar:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.musicbot.canary
-launchctl kickstart -k gui/$(id -u)/com.musicbot.update
+launchctl kickstart -k user/$(id -u)/com.musicbot.canary
+launchctl kickstart -k user/$(id -u)/com.musicbot.update
 ```
 
 Inspect status and logs:
 
 ```bash
-launchctl print gui/$(id -u)/com.musicbot.canary
-launchctl print gui/$(id -u)/com.musicbot.update
+launchctl print user/$(id -u)/com.musicbot.canary
+launchctl print user/$(id -u)/com.musicbot.update
 tail -f ~/Library/Logs/musicbot-canary.log
 tail -f ~/Library/Logs/musicbot-update.log
 ```
@@ -140,8 +142,8 @@ tail -f ~/Library/Logs/musicbot-update.log
 To uninstall:
 
 ```bash
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.canary.plist
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.update.plist
+launchctl bootout user/$(id -u)/com.musicbot.canary
+launchctl bootout user/$(id -u)/com.musicbot.update
 ```
 
 The canary runs under `caffeinate`, so an idle sleep does not interrupt a
