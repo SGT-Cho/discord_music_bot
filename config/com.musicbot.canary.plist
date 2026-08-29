@@ -10,6 +10,11 @@
     <key>Label</key>
     <string>com.musicbot.canary</string>
 
+    <!-- This Mac is administered through a headless SSH/background login,
+         so there is no gui/<uid> launchd domain. -->
+    <key>LimitLoadToSessionType</key>
+    <string>Background</string>
+
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/caffeinate</string>

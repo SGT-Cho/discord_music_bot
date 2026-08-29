@@ -9,7 +9,7 @@
   Install (edit the two paths first — launchd does not expand ~ or $HOME):
 
     cp config/com.musicbot.update.plist ~/Library/LaunchAgents/
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.update.plist
+    launchctl bootstrap user/$(id -u) ~/Library/LaunchAgents/com.musicbot.update.plist
 
   Check on it:
 
@@ -18,12 +18,17 @@
 
   Remove:
 
-    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.update.plist
+    launchctl bootout user/$(id -u)/com.musicbot.update
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.musicbot.update</string>
+
+    <!-- This Mac is administered through a headless SSH/background login,
+         so there is no gui/<uid> launchd domain. -->
+    <key>LimitLoadToSessionType</key>
+    <string>Background</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -61,6 +66,9 @@
     <!-- Do not fire during the boot storm; the first check can wait. -->
     <key>RunAtLoad</key>
     <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
 
     <key>StandardOutPath</key>
     <string>/Users/winter/Library/Logs/musicbot-update.log</string>
