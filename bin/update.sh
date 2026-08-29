@@ -9,6 +9,8 @@ SERVICE="music-bot"
 CONTAINER="discord-music-bot"
 IMAGE_REPOSITORY="${BOT_IMAGE_REPOSITORY:-ghcr.io/sgt-cho/discord_music_bot}"
 READY_TIMEOUT_SECONDS="${MUSICBOT_READY_TIMEOUT_SECONDS:-180}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-music-bot}"
+export COMPOSE_PROJECT_NAME
 CACHE_DIR="${HOME:?HOME must be set}/Library/Caches/musicbot"
 STATE_DIR="$HOME/Library/Application Support/musicbot"
 PIPELINE_LOCK="$CACHE_DIR/pipeline.lock"
@@ -376,17 +378,21 @@ if [ "$FORCE" = "1" ] || [ "$before" != "$target_id" ]; then
 fi
 compose_args+=("$SERVICE")
 
-deploy_ok=1
+deploy_result="ok"
 if ! BOT_IMAGE="$TARGET_IMAGE" docker compose "${compose_args[@]}"; then
-    deploy_ok=0
+    deploy_result="infrastructure"
 elif ! wait_until_ready "$TARGET_VERSION" "$deploy_since" 0; then
-    deploy_ok=0
+    deploy_result="readiness"
 fi
 
-if [ "$deploy_ok" != "1" ]; then
+if [ "$deploy_result" != "ok" ]; then
     log "New digest did not become stably healthy with yt-dlp $TARGET_VERSION; rolling back."
-    if ! reject_digest "$TARGET_IMAGE"; then
-        log "WARNING: could not persist the rejected digest quarantine."
+    if [ "$deploy_result" = "readiness" ]; then
+        if ! reject_digest "$TARGET_IMAGE"; then
+            log "WARNING: could not persist the rejected digest quarantine."
+        fi
+    else
+        log "Deployment infrastructure failed; the digest itself was not quarantined."
     fi
     if [ "$before" != "none" ] && rollback_to "$rollback_ref" "$before" "$before_version"; then
         rm -f -- "$PENDING_FILE"
