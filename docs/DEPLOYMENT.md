@@ -124,7 +124,9 @@ install -m 600 .env \
 The checked-in plists contain the actual deployment checkout path and Colima
 Docker context for this headless host. They explicitly target the per-user
 `Background` session because an SSH-managed Mac has no `gui/<uid>` launchd
-domain. Install both jobs with modern launchd commands:
+domain. The updater also fixes `COMPOSE_PROJECT_NAME=music-bot`, so moving the
+checkout cannot orphan or duplicate the existing container. Install both jobs
+with modern launchd commands:
 
 ```bash
 mkdir -p ~/Library/LaunchAgents ~/Library/Logs ~/Library/Caches/musicbot \
