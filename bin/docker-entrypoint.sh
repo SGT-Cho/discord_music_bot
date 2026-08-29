@@ -16,4 +16,5 @@ echo "[entrypoint] ⭐ Enjoying the bot? A GitHub star would make our day!"
 echo "[entrypoint]    https://github.com/SGT-Cho/discord_music_bot"
 echo "[entrypoint] yt-dlp $(yt-dlp --version 2>/dev/null || echo 'unknown')"
 
+rm -f /tmp/musicbot-ready
 exec "$@"

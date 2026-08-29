@@ -13,6 +13,7 @@ import sys
 import shutil
 import importlib.util
 from collections import deque
+from pathlib import Path
 
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -1930,6 +1931,9 @@ async def on_ready():
     activity = discord.Activity(type=discord.ActivityType.listening, name=t("presence_activity"))
     await bot.change_presence(status=discord.Status.online, activity=activity)
     try:
+        # Docker uses this per-container marker for bounded deployment
+        # readiness. /tmp starts fresh for every recreated container.
+        Path("/tmp/musicbot-ready").touch()
         music_cog = bot.get_cog("Music")
         if music_cog:
             for guild in bot.guilds:

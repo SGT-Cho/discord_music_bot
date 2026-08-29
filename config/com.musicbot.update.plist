@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  launchd job that runs bin/update.sh every 6 hours.
+  launchd job that runs bin/update.sh at 00:00/06:00/12:00/18:00 local time.
 
   launchd rather than cron because this runs on a laptop: if the machine is
   asleep at the scheduled time, launchd runs the job once on wake instead of
@@ -9,7 +9,7 @@
   Install (edit the two paths first — launchd does not expand ~ or $HOME):
 
     cp config/com.musicbot.update.plist ~/Library/LaunchAgents/
-    launchctl load ~/Library/LaunchAgents/com.musicbot.update.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.update.plist
 
   Check on it:
 
@@ -18,7 +18,7 @@
 
   Remove:
 
-    launchctl unload ~/Library/LaunchAgents/com.musicbot.update.plist
+    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.musicbot.update.plist
 -->
 <plist version="1.0">
 <dict>
@@ -36,20 +36,33 @@
          minimal PATH that does not include it. -->
     <key>EnvironmentVariables</key>
     <dict>
+        <key>HOME</key>
+        <string>/Users/winter</string>
         <key>PATH</key>
         <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>DOCKER_CONFIG</key>
+        <string>/Users/winter/.docker</string>
+        <key>DOCKER_CONTEXT</key>
+        <string>colima</string>
+        <key>LC_ALL</key>
+        <string>C</string>
     </dict>
 
-    <key>StartInterval</key>
-    <integer>21600</integer>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+    </array>
 
     <!-- Do not fire during the boot storm; the first check can wait. -->
     <key>RunAtLoad</key>
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/tmp/musicbot-update.log</string>
+    <string>/Users/winter/Library/Logs/musicbot-update.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/musicbot-update.log</string>
+    <string>/Users/winter/Library/Logs/musicbot-update.log</string>
 </dict>
 </plist>
