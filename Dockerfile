@@ -59,7 +59,9 @@ ARG YT_DLP_VERSION=""
 ARG YT_DLP_CHANNEL="stable"
 
 COPY --chown=botuser:botuser requirements.txt .
-# --upgrade : always pull the latest even with >= pins (avoids stale versions from cached images)
+# Release builds pass an exact YT_DLP_VERSION, which changes the layer cache
+# key. Channel-only development rebuilds need `docker compose build --no-cache`
+# when they must refresh a floating version immediately.
 RUN pip install --no-cache-dir --upgrade -r requirements.txt && \
     if [ -n "$YT_DLP_VERSION" ]; then \
         pip install --no-cache-dir --force-reinstall "yt-dlp[default]==${YT_DLP_VERSION}"; \

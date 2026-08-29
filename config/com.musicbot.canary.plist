@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Runs the yt-dlp release gate on the deployment WAN twice a day. It never
+  touches the running bot; only a fully passing candidate causes an SSH tag
+  push that authorizes the GitHub publish workflow.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.musicbot.canary</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
+        <string>/bin/bash</string>
+        <string>/Users/winter/Documents/discord-bot/music-bot/bin/release-ytdlp.sh</string>
+        <string>nightly</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/winter</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>DOCKER_CONFIG</key>
+        <string>/Users/winter/.docker</string>
+        <key>DOCKER_CONTEXT</key>
+        <string>colima</string>
+        <key>LC_ALL</key>
+        <string>C</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>4</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>16</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/Users/winter/Library/Logs/musicbot-canary.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/winter/Library/Logs/musicbot-canary.log</string>
+</dict>
+</plist>

@@ -1,26 +1,12 @@
-name: Publish image
+name: Publish verified image
 
-# Builds the deployment image and pushes it to GHCR.
-#
-# Deployment is pull-based: the bot runs on a machine GitHub cannot reach, so
-# nothing here connects to it. Publishing a new `latest` is the whole handoff —
-# Watchtower on that machine notices and restarts the container.
-
+# A deployment-WAN canary authorizes exactly one source commit and one exact
+# PEP 440 yt-dlp distribution version by pushing a lightweight tag. There is
+# intentionally no workflow_dispatch or workflow_call bypass.
 on:
-  workflow_call:
-    inputs:
-      ytdlp_version:
-        description: "Exact yt-dlp version to pin into the image"
-        type: string
-        required: false
-        default: ""
-  workflow_dispatch:
-    inputs:
-      ytdlp_version:
-        description: "Exact yt-dlp version to pin (blank = newest stable)"
-        type: string
-        required: false
-        default: ""
+  push:
+    tags:
+      - "deploy-ytdlp-v*--*"
 
 concurrency:
   group: publish-image
@@ -28,14 +14,83 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  publish:
-    name: Build and push
+  metadata:
+    name: Verify release authorization
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.verify.outputs.version }}
+      short_sha: ${{ steps.verify.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable tag metadata
+        id: verify
+        env:
+          DEPLOY_TAG: ${{ github.ref_name }}
+        run: |
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$(git cat-file -t "refs/tags/$DEPLOY_TAG")" = "commit"
+          checkout_sha="$(git rev-parse HEAD)"
+          test "$checkout_sha" = "$GITHUB_SHA"
+          version="$(python tools/ytdlp_release.py verify-tag "$DEPLOY_TAG" "$checkout_sha")"
+
+          # A valid-looking tag on an unrelated commit is not a release.
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$checkout_sha" refs/remotes/origin/main
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${checkout_sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "Authorized yt-dlp $version at $checkout_sha"
+
+  test:
+    name: Re-test authorized source
+    needs: metadata
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install exact authorized dependencies
+        env:
+          YTDLP_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install --force-reinstall "yt-dlp[default]==${YTDLP_VERSION}"
+          pip install pytest pytest-asyncio ruff
+          installed="$(python -c 'from importlib.metadata import version; print(version("yt-dlp"))')"
+          test "$installed" = "$YTDLP_VERSION"
+
+      - name: Validate source and deployment files
+        run: |
+          ruff check --no-cache .
+          python -m compileall -q music_bot.py setup.py src tools tests
+          pytest -m "not network" -v
+          bash -n bin/*.sh
+          python -c 'import glob, plistlib; [plistlib.load(open(path, "rb")) for path in glob.glob("config/*.plist")]'
+
+  publish:
+    name: Build and push
+    needs: [metadata, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: docker/setup-qemu-action@v3
 
@@ -48,18 +103,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tags
+      - name: Compute image tags
         id: tags
         env:
-          YTDLP_VERSION: ${{ inputs.ytdlp_version }}
+          YTDLP_VERSION: ${{ needs.metadata.outputs.version }}
+          SHORT_SHA: ${{ needs.metadata.outputs.short_sha }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          tags="${image}:latest,${image}:sha-${GITHUB_SHA::7}"
-          if [ -n "$YTDLP_VERSION" ]; then
-            # A per-version tag is what makes rollback a one-liner: redeploy
-            # the previous ytdlp-* tag instead of rebuilding anything.
-            tags="${tags},${image}:ytdlp-${YTDLP_VERSION}"
-          fi
+          tags="${image}:latest"
+          tags="${tags},${image}:sha-${SHORT_SHA}"
+          tags="${tags},${image}:ytdlp-${YTDLP_VERSION}"
+          tags="${tags},${image}:ytdlp-${YTDLP_VERSION}-sha-${GITHUB_SHA}"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
           echo "Publishing: $tags"
 
@@ -68,11 +122,13 @@ jobs:
         with:
           context: .
           push: true
-          # linux/arm64 is the deployment target (Apple Silicon); amd64 is kept
-          # so the image still runs on an x86 host without a rebuild.
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            YT_DLP_VERSION=${{ inputs.ytdlp_version }}
+            YT_DLP_VERSION=${{ needs.metadata.outputs.version }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.metadata.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

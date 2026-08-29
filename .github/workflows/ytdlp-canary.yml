@@ -4,10 +4,9 @@ name: yt-dlp canary
 # answers is not "did our code change?" but "does the newest yt-dlp still work
 # against real YouTube right now?".
 #
-# On a pass it builds and publishes an image pinned to that exact version, so
-# the running bot picks up a *verified* extractor rather than whatever was
-# newest at deploy time. On a failure it publishes nothing and reports, and
-# the deployed image keeps working with the version it already has.
+# GitHub-hosted runner IPs are often rejected by YouTube, so this is an
+# observational signal only. Publication is authorized separately by the
+# isolated canary running on the deployment WAN.
 
 on:
   schedule:
@@ -28,7 +27,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   CHANNEL: ${{ inputs.channel || 'nightly' }}
@@ -73,7 +71,9 @@ jobs:
         env:
           SMOKE_SUMMARY_PATH: ${{ runner.temp }}/smoke.json
         run: |
-          version="$(yt-dlp --version)"
+          # CLI output drops the PEP 440 nightly suffix (`.dev0`), which would
+          # make an exact pip pin fail. Distribution metadata is authoritative.
+          version="$(python -c 'from importlib.metadata import version; print(version("yt-dlp"))')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
           set +e
@@ -98,26 +98,12 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Only a hard failure stops the pipeline. "Inconclusive" means the
-          # canary could not reach a verdict (video removed, network flake, or
-          # a blocked hosted-runner IP). It must not publish an unverified
-          # image, but it should not paint the CD workflow red either.
+          # Only a hard failure stops this observational workflow.
           [ "$verdict" != "fail" ]
-
-  publish:
-    name: Publish verified image
-    needs: verify
-    if: needs.verify.outputs.verdict == 'pass'
-    uses: ./.github/workflows/publish.yml
-    with:
-      ytdlp_version: ${{ needs.verify.outputs.version }}
-    # No `secrets: inherit` on purpose. It would hand this job every secret in
-    # the repository — including the Discord token — when all it needs is
-    # GITHUB_TOKEN, which a called workflow already receives.
 
   report:
     name: Report result
-    needs: [verify, publish]
+    needs: verify
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -142,7 +128,7 @@ jobs:
         run: |
           case "$VERDICT" in
             pass)
-              text="✅ yt-dlp \`$VERSION\` passed the canary and was published. Hosts pick it up on their next update check."
+              text="✅ yt-dlp \`$VERSION\` passed the hosted observation. Publication still requires the deployment-WAN canary."
               ;;
             fail)
               text="🚨 yt-dlp \`$VERSION\` FAILED the canary — nothing was published and the running bot is untouched. <$RUN_URL>"

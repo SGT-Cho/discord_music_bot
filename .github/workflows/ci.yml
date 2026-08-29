@@ -18,9 +18,9 @@ jobs:
     name: Lint and test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -34,11 +34,16 @@ jobs:
       - name: Lint
         # Narrow rule set: undefined names, unused locals, broken f-strings —
         # the things that raise at runtime rather than style preferences.
-        run: ruff check .
+        run: ruff check --no-cache .
 
       - name: Byte-compile every module
         # Catches syntax errors in files no test happens to import.
-        run: python -m compileall -q music_bot.py src setup.py
+        run: python -m compileall -q music_bot.py src setup.py tools tests
+
+      - name: Validate deployment files
+        run: |
+          bash -n bin/*.sh
+          python -c 'import glob, plistlib; [plistlib.load(open(path, "rb")) for path in glob.glob("config/*.plist")]'
 
       - name: Test
         # Network-marked tests are excluded: they hit real YouTube, so a
@@ -50,7 +55,7 @@ jobs:
     name: Build image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Required to build linux/arm64 on an amd64 runner: without the QEMU
       # binfmt handlers registered, buildx has no way to execute arm64 steps.

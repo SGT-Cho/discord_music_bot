@@ -72,3 +72,24 @@ def test_large_video_runner_block_is_inconclusive(monkeypatch):
 def test_whole_canary_deadline_is_inconclusive():
     with pytest.raises(smoke.CanaryDeadlineExceeded):
         smoke._deadline_handler(None, None)
+
+
+def test_default_release_checks_exclude_long_session_monitor():
+    assert "long_session_read" not in {name for name, _ in smoke.CHECKS}
+
+
+def test_read_stream_rejects_an_early_eof(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read1(self, _size):
+            return b""
+
+    monkeypatch.setattr(smoke.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+
+    with pytest.raises(AssertionError, match="stream ended early"):
+        smoke.read_stream({"url": "https://example.invalid/media"}, 128, 5)
