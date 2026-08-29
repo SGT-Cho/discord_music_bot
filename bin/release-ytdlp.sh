@@ -20,19 +20,28 @@ log() {
 }
 
 verify_remote_tag() {
-    remote_lines="$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}")"
+    remote_lines="$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}")" || return 1
     remote_object="$(printf '%s\n' "$remote_lines" | awk -v ref="refs/tags/$TAG" '$2 == ref {print $1; exit}')"
     remote_commit="$(printf '%s\n' "$remote_lines" | awk -v ref="refs/tags/$TAG^{}" '$2 == ref {print $1; exit}')"
 
     [ -n "$remote_object" ] || return 1
     [ "$remote_commit" = "$SOURCE_SHA" ] || return 1
 
-    check_ref="refs/musicbot-release-check/$TAG"
-    git fetch --no-tags origin "+refs/tags/$TAG:$check_ref" >/dev/null
-    [ "$(git cat-file -t "$check_ref")" = "tag" ] || return 1
-    git -c gpg.format=ssh \
-        -c gpg.ssh.allowedSignersFile="$ALLOWED_SIGNERS" \
-        verify-tag "$check_ref" >/dev/null 2>&1
+    # A per-process ref prevents a failed fetch from falling back to an object
+    # left behind by an earlier verification attempt.
+    check_ref="refs/musicbot-release-check/$$/$TAG"
+    git fetch --no-tags origin "+refs/tags/$TAG:$check_ref" >/dev/null || return 1
+
+    verified=0
+    if [ "$(git cat-file -t "$check_ref" 2>/dev/null || true)" = "tag" ] && \
+        [ "$(git for-each-ref --format='%(tag)' "$check_ref")" = "$TAG" ] && \
+        git -c gpg.format=ssh \
+            -c gpg.ssh.allowedSignersFile="$ALLOWED_SIGNERS" \
+            verify-tag "$check_ref" >/dev/null 2>&1; then
+        verified=1
+    fi
+    git update-ref -d "$check_ref" >/dev/null 2>&1 || true
+    [ "$verified" = "1" ]
 }
 
 cleanup() {
@@ -170,6 +179,7 @@ fi
 log "Probe passed; authorizing publication with $TAG..."
 if git show-ref --verify --quiet "refs/tags/$TAG"; then
     [ "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$SOURCE_SHA" ]
+    [ "$(git for-each-ref --format='%(tag)' "refs/tags/$TAG")" = "$TAG" ]
     git -c gpg.format=ssh \
         -c gpg.ssh.allowedSignersFile="$ALLOWED_SIGNERS" \
         verify-tag "$TAG" >/dev/null

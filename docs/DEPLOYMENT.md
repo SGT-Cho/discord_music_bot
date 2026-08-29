@@ -31,6 +31,7 @@ authorization tag
 00:00 / 06:00 / 12:00 / 18:00 local
   -> bin/update.sh chooses the newest authorization on main
   -> verify OCI revision/version labels and pin the pulled sha256 digest
+  -> run the release gate again against that exact digest on the deployment WAN
   -> recreate -> wait for Discord ready + exact yt-dlp version
   -> pass: keep running; fail: recreate the previous image
 ```
@@ -38,8 +39,9 @@ authorization tag
 The convenience `latest`, `sha-<short>`, and `ytdlp-<version>` image tags are
 published for humans. Automated deployment resolves the full authorization tag
 once, records its first observed digest, and runs Compose with
-`repository@sha256:...`. A later registry-tag mutation is rejected. The lookup
-tag is:
+`repository@sha256:...`. Before activation, that exact platform image must pass
+the same live YouTube checks on the deployment WAN. A later registry-tag
+mutation is rejected. The lookup tag is:
 
 ```text
 ghcr.io/sgt-cho/discord_music_bot:ytdlp-<PEP440-version>-sha-<full-40-char-commit>
@@ -109,8 +111,9 @@ The checked-in plists contain the actual checkout path and Colima Docker
 context for this host. Install both jobs with modern launchd commands:
 
 ```bash
-mkdir -p ~/Library/LaunchAgents ~/Library/Logs ~/Library/Caches/musicbot
-chmod 700 ~/Library/Caches/musicbot
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs ~/Library/Caches/musicbot \
+  ~/Library/"Application Support"/musicbot
+chmod 700 ~/Library/Caches/musicbot ~/Library/"Application Support"/musicbot
 cp config/com.musicbot.canary.plist ~/Library/LaunchAgents/
 cp config/com.musicbot.update.plist ~/Library/LaunchAgents/
 
@@ -161,7 +164,10 @@ healthy for a stability window with the exact yt-dlp version and no restart.
 Failure restores the prior image and quarantines the rejected digest; an
 interrupted transaction is recovered on the next run.
 
-Updater state lives in `~/Library/Caches/musicbot/`. To deliberately retry a
+The shared process lock lives in `~/Library/Caches/musicbot/`. Durable updater
+state (the transaction journal, authorization-to-digest pins, and rejected
+digest quarantine) lives in `~/Library/Application Support/musicbot/`, which
+macOS does not treat as purgeable cache data. To deliberately retry a
 previously rejected digest after investigating it, remove only its exact line
 from `rejected-digests.txt`; do not delete or move the signed Git tag.
 

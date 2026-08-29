@@ -9,10 +9,10 @@ SERVICE="music-bot"
 CONTAINER="discord-music-bot"
 IMAGE_REPOSITORY="${BOT_IMAGE_REPOSITORY:-ghcr.io/sgt-cho/discord_music_bot}"
 READY_TIMEOUT_SECONDS="${MUSICBOT_READY_TIMEOUT_SECONDS:-180}"
-STATE_DIR="${HOME:?HOME must be set}/Library/Caches/musicbot"
-PIPELINE_LOCK="$STATE_DIR/pipeline.lock"
+CACHE_DIR="${HOME:?HOME must be set}/Library/Caches/musicbot"
+STATE_DIR="$HOME/Library/Application Support/musicbot"
+PIPELINE_LOCK="$CACHE_DIR/pipeline.lock"
 PENDING_FILE="$STATE_DIR/deploy-pending.tsv"
-LAST_GOOD_FILE="$STATE_DIR/last-good.tsv"
 AUTH_DIGESTS_FILE="$STATE_DIR/authorization-digests.tsv"
 REJECTED_FILE="$STATE_DIR/rejected-digests.txt"
 ALLOWED_SIGNERS="$PROJECT_DIR/config/release_allowed_signers"
@@ -29,8 +29,8 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
-mkdir -p "$STATE_DIR"
-chmod 700 "$STATE_DIR"
+mkdir -p "$CACHE_DIR" "$STATE_DIR"
+chmod 700 "$CACHE_DIR" "$STATE_DIR"
 
 # The release probe and updater share one lock: both can be scheduled together
 # after wake, but only one may fetch/build/pull through Colima at a time.
@@ -114,15 +114,15 @@ atomic_record() {
     destination="$1"
     shift
     temporary="$destination.tmp.$$"
-    printf '%s' "$1" > "$temporary"
+    printf '%s' "$1" > "$temporary" || return 1
     shift
     while [ "$#" -gt 0 ]; do
-        printf '\t%s' "$1" >> "$temporary"
+        printf '\t%s' "$1" >> "$temporary" || return 1
         shift
     done
-    printf '\n' >> "$temporary"
-    chmod 600 "$temporary"
-    mv -f "$temporary" "$destination"
+    printf '\n' >> "$temporary" || return 1
+    chmod 600 "$temporary" || return 1
+    mv -f "$temporary" "$destination" || return 1
 }
 
 append_record() {
@@ -131,17 +131,17 @@ append_record() {
     second="${3:-}"
     temporary="$destination.tmp.$$"
     if [ -f "$destination" ]; then
-        cp "$destination" "$temporary"
+        cp "$destination" "$temporary" || return 1
     else
-        : > "$temporary"
+        : > "$temporary" || return 1
     fi
     if [ -n "$second" ]; then
-        printf '%s\t%s\n' "$first" "$second" >> "$temporary"
+        printf '%s\t%s\n' "$first" "$second" >> "$temporary" || return 1
     else
-        printf '%s\n' "$first" >> "$temporary"
+        printf '%s\n' "$first" >> "$temporary" || return 1
     fi
-    chmod 600 "$temporary"
-    mv -f "$temporary" "$destination"
+    chmod 600 "$temporary" || return 1
+    mv -f "$temporary" "$destination" || return 1
 }
 
 pin_authorization_digest() {
@@ -156,14 +156,14 @@ pin_authorization_digest() {
         return 1
     fi
     if [ -z "$known" ]; then
-        append_record "$AUTH_DIGESTS_FILE" "$tag" "$digest"
+        append_record "$AUTH_DIGESTS_FILE" "$tag" "$digest" || return 1
     fi
 }
 
 reject_digest() {
     digest="$1"
     if [ ! -f "$REJECTED_FILE" ] || ! grep -Fqx -- "$digest" "$REJECTED_FILE"; then
-        append_record "$REJECTED_FILE" "$digest"
+        append_record "$REJECTED_FILE" "$digest" || return 1
     fi
 }
 
@@ -174,9 +174,15 @@ resolve_target() {
     TARGET_TAG=""
 
     log "Fetching main and signed deployment authorizations..."
-    git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+    git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main || {
+        log "Could not refresh origin/main; refusing stale deployment state."
+        return 1
+    }
     git fetch --no-tags --prune origin \
-        '+refs/tags/deploy-ytdlp-v*:refs/musicbot-deploy/deploy-ytdlp-v*'
+        '+refs/tags/deploy-ytdlp-v*:refs/musicbot-deploy/deploy-ytdlp-v*' || {
+        log "Could not refresh deployment authorizations; refusing stale tag state."
+        return 1
+    }
 
     while IFS= read -r commit; do
         best_key=""
@@ -187,14 +193,15 @@ resolve_target() {
             [ "$object_type" = "tag" ] || continue
             ref_commit="$(git rev-parse "$ref_name^{commit}" 2>/dev/null || true)"
             [ "$ref_commit" = "$commit" ] || continue
+            tag="${ref_name#refs/musicbot-deploy/}"
+            [ "$(git for-each-ref --format='%(tag)' "$ref_name")" = "$tag" ] || continue
             git -c gpg.format=ssh \
                 -c gpg.ssh.allowedSignersFile="$ALLOWED_SIGNERS" \
                 verify-tag "$ref_name" >/dev/null 2>&1 || continue
 
-            tag="${ref_name#refs/musicbot-deploy/}"
             version="$(python3 tools/ytdlp_release.py verify-tag "$tag" "$commit" 2>/dev/null || true)"
             [ -n "$version" ] || continue
-            key="$(python3 tools/ytdlp_release.py sort-key "$version")"
+            key="$(python3 tools/ytdlp_release.py sort-key "$version")" || continue
             if [ -z "$best_key" ] || [[ "$key" > "$best_key" ]]; then
                 best_key="$key"
                 best_tag="$tag"
@@ -273,22 +280,30 @@ recover_interrupted_deployment() {
     candidate_id="$(docker image inspect --format '{{.Id}}' "$candidate_ref" 2>/dev/null || true)"
     if [ "$current_id" = "$previous_id" ]; then
         log "Clearing a transaction interrupted before candidate activation."
-        rm -f -- "$PENDING_FILE"
+        rm -f -- "$PENDING_FILE" || return 1
         return 0
+    fi
+
+    if [ "$current_id" = "none" ] && [ "$previous_ref" != "none" ]; then
+        log "Restoring the previous image after an interrupted container recreation..."
+        if rollback_to "$previous_ref" "$previous_id" "$previous_version"; then
+            rm -f -- "$PENDING_FILE" || return 1
+            return 0
+        fi
     fi
 
     if [ -n "$candidate_id" ] && [ "$current_id" = "$candidate_id" ]; then
         log "Recovering an interrupted candidate readiness decision..."
         if wait_until_ready "$candidate_version" '1970-01-01T00:00:00Z' 0; then
-            atomic_record "$LAST_GOOD_FILE" "$candidate_ref" "$candidate_version"
-            rm -f -- "$PENDING_FILE"
+            rm -f -- "$PENDING_FILE" || return 1
             return 0
         fi
 
-        reject_digest "$candidate_ref"
+        if ! reject_digest "$candidate_ref"; then
+            log "WARNING: could not persist the rejected digest quarantine."
+        fi
         if [ "$previous_ref" != "none" ] && rollback_to "$previous_ref" "$previous_id" "$previous_version"; then
-            atomic_record "$LAST_GOOD_FILE" "$previous_ref" "${previous_version:--}"
-            rm -f -- "$PENDING_FILE"
+            rm -f -- "$PENDING_FILE" || return 1
             return 0
         fi
     fi
@@ -312,6 +327,35 @@ fi
 
 before="$(image_id)"
 before_version="$(container_version)"
+target_id="$(docker image inspect --format '{{.Id}}' "$TARGET_IMAGE")"
+
+# The deployment-WAN release probe initially authorizes source + version. The
+# registry image is rebuilt by GitHub, so exercise the exact pulled digest on
+# this host before it is allowed to replace the running container.
+if [ "$before" != "$target_id" ]; then
+    log "Running the release gate against the exact published digest..."
+    set +e
+    docker run --rm \
+        --entrypoint python \
+        -e SMOKE_TOTAL_DEADLINE_SECONDS=600 \
+        -e SMOKE_STREAM_DEADLINE_SECONDS=120 \
+        "$TARGET_IMAGE" \
+        tools/ytdlp_smoke.py
+    smoke_status=$?
+    set -e
+
+    if [ "$smoke_status" = "1" ]; then
+        if ! reject_digest "$TARGET_IMAGE"; then
+            log "WARNING: could not persist the rejected digest quarantine."
+        fi
+        log "Published digest failed its deployment-WAN release gate; keeping the current deployment."
+        exit 1
+    elif [ "$smoke_status" != "0" ]; then
+        log "Published digest probe was inconclusive (exit $smoke_status); keeping the current deployment."
+        exit 1
+    fi
+fi
+
 if [ "$before" = "none" ]; then
     rollback_ref="none"
 else
@@ -320,7 +364,6 @@ else
     docker image tag "$before" "$rollback_ref"
 fi
 
-target_id="$(docker image inspect --format '{{.Id}}' "$TARGET_IMAGE")"
 atomic_record "$PENDING_FILE" \
     "$rollback_ref" "$before" "${before_version:--}" "$TARGET_IMAGE" "$TARGET_VERSION"
 
@@ -342,9 +385,10 @@ fi
 
 if [ "$deploy_ok" != "1" ]; then
     log "New digest did not become stably healthy with yt-dlp $TARGET_VERSION; rolling back."
-    reject_digest "$TARGET_IMAGE"
+    if ! reject_digest "$TARGET_IMAGE"; then
+        log "WARNING: could not persist the rejected digest quarantine."
+    fi
     if [ "$before" != "none" ] && rollback_to "$rollback_ref" "$before" "$before_version"; then
-        atomic_record "$LAST_GOOD_FILE" "$rollback_ref" "${before_version:--}"
         rm -f -- "$PENDING_FILE"
         log "Rollback succeeded: $before ($before_version)."
     else
@@ -353,7 +397,6 @@ if [ "$deploy_ok" != "1" ]; then
     exit 1
 fi
 
-atomic_record "$LAST_GOOD_FILE" "$TARGET_IMAGE" "$TARGET_VERSION"
 rm -f -- "$PENDING_FILE"
 after="$(image_id)"
 if [ "$before" = "$after" ] && [ "$FORCE" != "1" ]; then
