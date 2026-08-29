@@ -35,8 +35,8 @@
         <string>/usr/bin/caffeinate</string>
         <string>-i</string>
         <string>/bin/bash</string>
-        <!-- Absolute path to your checkout; launchd does not expand ~ or $HOME. -->
-        <string>/Users/winter/Documents/discord-bot/music-bot/bin/update.sh</string>
+        <!-- Absolute path to the deployment checkout outside TCC-protected Documents. -->
+        <string>/Users/winter/Library/Application Support/musicbot/repository/bin/update.sh</string>
     </array>
 
     <!-- Docker Desktop puts the `docker` CLI here; launchd jobs start with a
@@ -51,6 +51,8 @@
         <string>/Users/winter/.docker</string>
         <key>DOCKER_CONTEXT</key>
         <string>colima</string>
+        <key>MUSIC_LIBRARY_PATH</key>
+        <string>/Users/winter/Documents/discord-bot/music-bot/music_library</string>
         <key>LC_ALL</key>
         <string>C</string>
     </dict>

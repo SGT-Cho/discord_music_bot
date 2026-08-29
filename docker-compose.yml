@@ -21,7 +21,9 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./music_library:/app/cache/audio
+      # A headless launchd deployment uses a checkout outside macOS-protected
+      # Documents while retaining the existing host audio cache.
+      - "${MUSIC_LIBRARY_PATH:-./music_library}:/app/cache/audio"
     networks:
       - bot-network
     # A fresh container becomes healthy only after Discord's on_ready event.
