@@ -394,7 +394,11 @@ if [ "$deploy_result" != "ok" ]; then
     else
         log "Deployment infrastructure failed; the digest itself was not quarantined."
     fi
-    if [ "$before" != "none" ] && rollback_to "$rollback_ref" "$before" "$before_version"; then
+    current_after_failure="$(image_id)"
+    if [ "$current_after_failure" = "$before" ]; then
+        rm -f -- "$PENDING_FILE" || log "WARNING: could not clear the deployment journal."
+        log "The existing deployment remained active; no rollback recreation was needed."
+    elif [ "$before" != "none" ] && rollback_to "$rollback_ref" "$before" "$before_version"; then
         rm -f -- "$PENDING_FILE"
         log "Rollback succeeded: $before ($before_version)."
     else
