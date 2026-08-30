@@ -150,22 +150,17 @@ class AudioCacheManager:
 
                 await loop.run_in_executor(None, _download)
 
-                # The yt-dlp postprocessor converts to a .mp3 extension, but
-                # the actual filename may differ because of the outtmpl pattern
-                # Find the tmp file: {video_id}.tmp.mp3 form
-                actual_tmp = None
-                for f in self.cache_dir.iterdir():
-                    if f.name.startswith(f"{video_id}.tmp") and f.name.endswith('.mp3') and f.stat().st_size > 0:
-                        actual_tmp = f
-                        break
-
-                if actual_tmp is None:
+                # The output template and postprocessor make this filename
+                # deterministic. Address it directly instead of scanning the
+                # directory: macOS privacy controls can allow named-file I/O
+                # through a container bind mount while denying listdir(2).
+                if not tmp_path.is_file() or tmp_path.stat().st_size <= 0:
                     logger.error(f"[Cache] Download completed but MP3 file not found for {video_id}")
                     await self._report_failure(video_id)
                     return False
 
                 # Atomic rename
-                actual_tmp.rename(final_path)
+                tmp_path.replace(final_path)
                 logger.info(f"[Cache] Cached successfully: {video_id} ({final_path.stat().st_size / 1024 / 1024:.1f}MB)")
 
                 # Save metadata JSON sidecar
@@ -175,13 +170,17 @@ class AudioCacheManager:
             except Exception as e:
                 logger.error(f"[Cache] Download error for {video_id}: {redact_input(e)}")
                 await self._report_failure(video_id, e)
-                # Clean up temp files
-                for f in self.cache_dir.iterdir():
-                    if f.name.startswith(f"{video_id}.tmp"):
-                        try:
-                            f.unlink()
-                        except OSError:
-                            pass
+                # Do not scan the directory during cleanup for the same
+                # reason as above. yt-dlp's final postprocessed path is known.
+                try:
+                    tmp_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as cleanup_error:
+                    logger.warning(
+                        f"[Cache] Failed to clean temp file for {video_id}: "
+                        f"{redact_input(cleanup_error)}"
+                    )
                 return False
             finally:
                 self._downloading.discard(video_id)
