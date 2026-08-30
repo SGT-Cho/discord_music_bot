@@ -116,7 +116,9 @@ jobs:
       - name: Notify Discord
         # Delivery is opt-in. Configure a webhook (channel) or a bot token with
         # a channel or user ID (DM); with none set this prints a note and
-        # succeeds, and the verdict still lands in the run summary.
+        # succeeds, and the verdict still lands in the run summary. A hosted
+        # runner being rejected by YouTube is expected and non-actionable, so
+        # inconclusive observations remain in Actions without paging Discord.
         env:
           DISCORD_WEBHOOK: ${{ secrets.OPS_DISCORD_WEBHOOK }}
           DISCORD_BOT_TOKEN: ${{ secrets.OPS_DISCORD_BOT_TOKEN }}
@@ -133,8 +135,12 @@ jobs:
             fail)
               text="🚨 yt-dlp \`$VERSION\` FAILED the canary — nothing was published and the running bot is untouched. <$RUN_URL>"
               ;;
+            inconclusive)
+              echo "Hosted observation was inconclusive; keeping the result in Actions only."
+              exit 0
+              ;;
             *)
-              text="⚠️ yt-dlp canary was inconclusive on \`$VERSION\`, so nothing was published. The canary itself needs a look. <$RUN_URL>"
+              text="🚨 yt-dlp canary produced no verdict. Inspect the workflow itself. <$RUN_URL>"
               ;;
           esac
           python tools/notify_discord.py "$text"
