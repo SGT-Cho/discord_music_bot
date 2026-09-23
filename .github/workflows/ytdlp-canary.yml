@@ -114,9 +114,19 @@ jobs:
           python-version: "3.11"
 
       - name: Notify Discord
+        # Only a hard verify failure earns a ping. GitHub-hosted runner IPs
+        # are effectively always bot-checked by YouTube, so inconclusive is
+        # the routine verdict here — notifying on it was pure noise. Passes
+        # and inconclusive runs still land in the run summary, and the
+        # deployment-WAN canary owns the release gate.
+        #
+        # Gating on the job result rather than the verdict output also
+        # catches a verify job that died before writing a verdict (install
+        # or checkout failure), which is a canary breakage worth a ping.
         # Delivery is opt-in. Configure a webhook (channel) or a bot token with
         # a channel or user ID (DM); with none set this prints a note and
         # succeeds, and the verdict still lands in the run summary.
+        if: needs.verify.result == 'failure'
         env:
           DISCORD_WEBHOOK: ${{ secrets.OPS_DISCORD_WEBHOOK }}
           DISCORD_BOT_TOKEN: ${{ secrets.OPS_DISCORD_BOT_TOKEN }}
@@ -126,15 +136,9 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          case "$VERDICT" in
-            pass)
-              text="✅ yt-dlp \`$VERSION\` passed the hosted observation. Publication still requires the deployment-WAN canary."
-              ;;
-            fail)
-              text="🚨 yt-dlp \`$VERSION\` FAILED the canary — nothing was published and the running bot is untouched. <$RUN_URL>"
-              ;;
-            *)
-              text="⚠️ yt-dlp canary was inconclusive on \`$VERSION\`, so nothing was published. The canary itself needs a look. <$RUN_URL>"
-              ;;
-          esac
+          if [ "$VERDICT" = "fail" ]; then
+            text="🚨 yt-dlp \`$VERSION\` FAILED the canary — nothing was published and the running bot is untouched. <$RUN_URL>"
+          else
+            text="⚠️ yt-dlp canary job broke before producing a verdict — the canary itself needs a look. <$RUN_URL>"
+          fi
           python tools/notify_discord.py "$text"
