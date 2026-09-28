@@ -1368,8 +1368,8 @@ class Music(commands.Cog):
                                         
                                         # Start playback
                                         voice_client.play(
-                                            self.current[guild_id], 
-                                            after=lambda e: self.bot.loop.create_task(self.play_next_after_song(e, guild_id))
+                                            self.current[guild_id],
+                                            after=lambda e: asyncio.run_coroutine_threadsafe(self.play_next_after_song(e, guild_id), self.bot.loop)
                                         )
                                         
                                         logger.info(f"[Guild {guild_id}] Stream recovery successful (attempt {current_track._recovery_attempts})")
@@ -1555,7 +1555,7 @@ class Music(commands.Cog):
             self.current[guild_id].data['bitrate'] = optimal_bitrate
             
             logger.info(f"[Guild {guild_id}] Now playing: {self.current[guild_id].title} {'(autoplay)' if is_autoplay_track else ''} at {optimal_bitrate}kbps")
-            voice_client.play(self.current[guild_id], after=lambda e: self.bot.loop.create_task(self.play_next_after_song(e, guild_id)))
+            voice_client.play(self.current[guild_id], after=lambda e: asyncio.run_coroutine_threadsafe(self.play_next_after_song(e, guild_id), self.bot.loop))
             await self.update_nowplaying_ui(guild)
             
             # Start voice connection monitoring (cancel any previous task)
